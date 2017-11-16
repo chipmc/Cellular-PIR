@@ -1,5 +1,5 @@
 /*
-* Project Cellular-PIR
+* Project Cellular-PIR - converged
 * Description: Cellular Connected Data Logger for Solar installations
 * Author: Chip McClelland
 * Date:16 November 2017
