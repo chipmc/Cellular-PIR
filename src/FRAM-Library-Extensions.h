@@ -76,6 +76,7 @@ void FRAMwrite32(int address, unsigned long value)  // Write 32 bits to FRAM
 void ResetFRAM()  // This will reset the FRAM - set the version and preserve delay and sensitivity
 {
     // Note - have to hard code the size here due to this issue - http://www.microchip.com/forums/m501193.aspx
+    byte tempControlReg = FRAMread8(CONTROLREGISTER);
     Serial.println("Resetting Memory");
     for (unsigned long i=4; i < 32768; i++) {  // Start at 4 to not overwrite debounce and sensitivity
         FRAMwrite8(i,0x0);
@@ -84,5 +85,6 @@ void ResetFRAM()  // This will reset the FRAM - set the version and preserve del
         if (i==(24576)) Serial.println(F("75% done"));
         if (i==32767) Serial.println(F("Done"));
     }
+    FRAMwrite8(CONTROLREGISTER,tempControlReg);   // Preserce the control register values
     FRAMwrite8(VERSIONADDR,VERSIONNUMBER);  // Reset version to match #define value for sketch
 }

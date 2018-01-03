@@ -1,11 +1,19 @@
 /*
-* Project Cellular-PIR - converged
-* Description: Cellular Connected Data Logger for Solar installations
+* Project Cellular-PIR - converged software for Low Power and Solar
+* Description: Cellular Connected Data Logger for Utility and Solar powered installations
 * Author: Chip McClelland
-* Date:16 November 2017
+* Date:28 November 2017
 */
 
-// On the solar installation I am not using the hardware watchdog
+/*  The idea of this release is to unify the code base between PIR sensors
+    Both implementations will move over to the finite state machine approach
+    Both implementations will observe the park open and closing hours
+    I will add two new states: 1) Low Power mode - maintains functionality but conserves battery by
+    enabling sleep  2) Low Battery Mode - reduced functionality to preserve battery charge
+
+    The mode will be set and recoded in the CONTROLREGISTER so resets will not change the mode
+    Control Register - bits 7-2 reserved, 1 - Low Battery Mode, 0 - Low Power Mode
+*/
 
 // Easy place to change global numbers
 //These defines let me change the memory map and configuration without hunting through the whole program
@@ -35,7 +43,7 @@
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.5"
+#define SOFTWARERELEASENUMBER "0.14"
 #define PARKCLOSES 18
 #define PARKOPENS 6
 
@@ -64,7 +72,6 @@ const int donePin = D6;                     // Pin the Electron uses to "pet" th
 const int wakeUpPin = A7;                   // This is the Particle Electron WKP pin
 const int hardResetPin = D4;                // Power Cycles the Electron and the Carrier Board
 
-
 // Timing Variables
 unsigned long publishTimeStamp = 0;         // Keep track of when we publish a webhook
 unsigned long webhookWaitTime = 45000;      // How long will we let a webhook go before we give up
@@ -78,11 +85,13 @@ bool waiting = false;                       // Keeps track of things that are in
 bool readyForBed = false;                   // Keeps track of the things that you do once before sleep
 
 // Program Variables
-int temperatureF;                    // Global variable so we can monitor via cloud variable
-int resetCount;                      // Counts the number of times the Electron has had a pin reset
+int temperatureF;                           // Global variable so we can monitor via cloud variable
+int resetCount;                             // Counts the number of times the Electron has had a pin reset
 bool ledState = LOW;                        // variable used to store the last LED status, to toggle the light
 const char* releaseNumber = SOFTWARERELEASENUMBER;  // Displays the release on the menu
-int lowBattLimit = 30;              // Trigger for Low Batt State
+int lowBattLimit = 30;                      // Trigger for Low Batt State
+bool lowPowerMode;                          // Flag for Low Power Mode operations
+byte currentControlRegister;                // Stores the control register values
 
 // FRAM and Unix time variables
 time_t t;
@@ -138,6 +147,7 @@ void setup()                                                      // Note: Disco
   Particle.variable("Temperature",temperatureF);
   Particle.variable("Release",releaseNumber);
   Particle.variable("stateOfChg", stateOfCharge);
+  Particle.variable("lowPowerMode",lowPowerMode);
 
   Particle.function("startStop", startStop);                          // Define my Particle functions
   Particle.function("resetFRAM", resetFRAM);
@@ -146,6 +156,7 @@ void setup()                                                      // Note: Disco
   Particle.function("HardReset",hardResetNow);
   Particle.function("SleepInFive",sleepInFive);
   Particle.function("SendNow",sendNow);
+  Particle.function("LowPowerMode",setLowPowerMode);
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
     snprintf(Status,13,"Missing FRAM");                                 // Can't communicate with FRAM - fatal error
@@ -157,12 +168,20 @@ void setup()                                                      // Note: Disco
     if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) state = ERROR_STATE;   // Resetting did not fix the issue
   }
 
-  resetCount = FRAMread8(RESETCOUNT);                                   // Retrive system recount data from FRAMwrite8
+  resetCount = FRAMread8(RESETCOUNT);                                   // Retrive system recount data from FRAM
   if (System.resetReason() == RESET_REASON_PIN_RESET)                   // Check to see if we are starting from a pin reset
   {
     resetCount++;
     FRAMwrite8(RESETCOUNT,static_cast<uint8_t>(resetCount));            // If so, store incremented number - watchdog must have done This
   }
+
+  currentControlRegister = FRAMread8(CONTROLREGISTER);                  // Read the Control Register for system modes
+  // lowPowerMode = (00000001 & currentControlRegister);                   // Bitwise AND to set the lowPowerMode flag from control Register
+  // For Testing - Start
+  lowPowerMode = 0;
+  FRAMwrite8(CONTROLREGISTER,0);
+  // For testing - End
+  if (!lowPowerMode) connectToParticle();
 
   Time.zone(-5);                                                        // Set time zone to Eastern USA daylight saving time
   takeMeasurements();
@@ -182,11 +201,11 @@ void loop()
       FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
       hourlyPersonCountSent = 0;
     }
-    if (sensorDetect) recordCount();                                                  // The ISR had raised the sensor flag
-    if (millis() >= (lastEvent + timeTillSleep)) state = NAPPING_STATE;               // Too long since last sensor flag - time to nap
-    if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;   // We want to report on the hour but not after bedtime
-    if (Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS) state = SLEEPING_STATE;  // The park is closed, time to sleep
-    if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;                                           // The battery is low - sleep
+    if (sensorDetect) recordCount();                                                                    // The ISR had raised the sensor flag
+    if ((millis() >= (lastEvent + timeTillSleep)) && lowPowerMode) state = NAPPING_STATE;               // Too long since last sensor flag - time to nap
+    if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;                                    // We want to report on the hour but not after bedtime
+    if ((Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) state = SLEEPING_STATE; // The park is closed, time to sleep
+    if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;                                               // The battery is low - sleep
     break;
 
   case SLEEPING_STATE: {                                        // This state is triggered once the park closes and runs until it opens
@@ -248,9 +267,11 @@ void loop()
 
   case REPORTING_STATE: {
     timeTillSleep = sleepDelay;                              // Sets the sleep delay to give time to flash if needed
-    if (!connectToParticle()) {
-      state = ERROR_STATE;
-      break;
+    if (!Particle.connected()) {
+      if (!connectToParticle()) {
+        state = ERROR_STATE;
+        break;
+      }
     }
     takeMeasurements();
     if (Status[0] != '\0')
@@ -472,6 +493,26 @@ int sendNow(String command) // Function to force sending data in current hour
     return 1;
   }
   else return 0;
+}
+
+int setLowPowerMode(String command)  // This is where we can put the device into low power mode if needed
+{
+  if (command != "1" && command != "0") return 0;                     // Before we begin, let's make sure we have a valid input
+  byte controlRegister = FRAMread8(CONTROLREGISTER);                  // Get the control register (generla approach)
+  if (command == "1")        // Look at command and see if we need to make a change
+  {
+    Particle.publish("Mode","Low Power");
+    controlRegister = (0b00000001 | controlRegister);                  // If so, flip the lowPowerMode bit
+    lowPowerMode = true;
+  }
+  else if (command == "0")
+  {
+    Particle.publish("Mode","Normal Operations");
+    controlRegister = (0b1111110 & controlRegister);                  // If so, flip the lowPowerMode bit
+    lowPowerMode = false;
+  }
+  FRAMwrite8(CONTROLREGISTER,controlRegister);
+  return 1;
 }
 
 int getTemperature()
