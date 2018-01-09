@@ -17,35 +17,33 @@
 
 // Easy place to change global numbers
 //These defines let me change the memory map and configuration without hunting through the whole program
-#define VERSIONNUMBER 7             // Increment this number each time the memory map is changed
-#define WORDSIZE 8                  // For the Word size
+#define VERSIONNUMBER 8             // Increment this number each time the memory map is changed
+#define WORDSIZE 8                  // For the Word size the number of bytes in a "word"
 #define PAGESIZE 4096               // Memory size in bytes / word size - 256kb FRAM
-// First Word - 8 bytes for setting global values
-#define DAILYOFFSET 2               // First word of daily counts
-#define HOURLYOFFSET 30             // First word of hourly counts (remember we start counts at 1)
-#define DAILYCOUNTNUMBER 28         // used in modulo calculations - sets the # of days stored
+#define HOURLYOFFSET 24             // First word of hourly counts (remember we start counts at 1)
 #define HOURLYCOUNTNUMBER 4064      // used in modulo calculations - sets the # of hours stored - 256k (4096-14-2)
-#define VERSIONADDR 0x0             // Memory Locations By Name not Number
-#define SENSITIVITYADDR 0x1         // For the 1st Word locations
+// First Word - 8 bytes for setting global values
+#define VERSIONADDR 0x0             // Where we store the memory map version number
+#define SENSITIVITYADDR 0x1         // Sensitivity for Accelerometer sensors
 #define DEBOUNCEADDR 0x2            // One uint8_t for debounce (stored in cSec mult by 10 for mSec)
 #define RESETCOUNT 0x3              // This is where we keep track of how often the Electron was reset
-#define DAILYPOINTERADDR 0x4        // One uint8_t for daily pointer
+                                    // One byte is open here
 #define HOURLYPOINTERADDR 0x5       // Two bytes for hourly pointer
 #define CONTROLREGISTER 0x7         // This is the control register for storing the current state - future use
-//Second Word - 8 bytes for storing current counts
+//Second and Third words bytes for storing current counts
 #define CURRENTHOURLYCOUNTADDR 0x8  // Current Hourly Count - 16 bits
-#define CURRENTDAILYCOUNTADDR 0xA   // Current Daily Count - 16 bits
+#define CURRENTHOURLYDURATIONADDR 0xA   // Current Hourly Duration Count - 16 bits
+#define CURRENTDAILYCOUNTADDR 0xC   // Current Daily Count - 16 bits
 #define CURRENTCOUNTSTIME 0xC       // Time of last count - 32 bits
+                                    // Six open bytes here which takes us to the third word
 //These are the hourly and daily offsets that make up the respective words
-#define DAILYDATEOFFSET 1           //Offsets for the value in the daily words
-#define DAILYCOUNTOFFSET 2          // Count is a 16-bt value
-#define DAILYBATTOFFSET 4           // Where the battery charge is stored
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.14"
-#define PARKCLOSES 18
+#define SOFTWARERELEASENUMBER "0.30"
+#define PARKCLOSES 20
 #define PARKOPENS 6
+#define LOCALTIMEZONE -5
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
@@ -79,8 +77,10 @@ unsigned long resetWaitTimeStamp = 0;       // Starts the reset wait clock
 unsigned long resetWaitTime = 30000;        // Will wait this lonk before resetting.
 unsigned long sleepDelay = 60000;           // Longer delay before sleep when booting up or on the hour - gives time to flash
 unsigned long timeTillSleep = 0;            // This will either be short or long depending on nap or sleep
-unsigned long napDelay = 3000;              // Normal amount of time after event before taking a nap
-unsigned long lastEvent = 0;                // Keeps track of the last time there was an event
+
+unsigned long napDelay = 3000;              // Normal amount of time after event before taking a nap - it also sets the unit of measure for a "visitor"
+unsigned long debounce = 1000;              // Triggers less than this amount will be ignored
+
 bool waiting = false;                       // Keeps track of things that are in flight - enables non-blocking code
 bool readyForBed = false;                   // Keeps track of the things that you do once before sleep
 
@@ -91,22 +91,25 @@ bool ledState = LOW;                        // variable used to store the last L
 const char* releaseNumber = SOFTWARERELEASENUMBER;  // Displays the release on the menu
 int lowBattLimit = 30;                      // Trigger for Low Batt State
 bool lowPowerMode;                          // Flag for Low Power Mode operations
-byte currentControlRegister;                // Stores the control register values
+byte controlRegister;                       // Stores the control register values
 
 // FRAM and Unix time variables
 time_t t;
-byte lastHour = 0;                   // For recording the startup values
-byte lastDate = 0;                   // These values make sure we record events if time has lapsed
-int hourlyPersonCount = 0;           // hourly counter
-int hourlyPersonCountSent = 0;       // Person count in flight to Ubidots
-int dailyPersonCount = 0;            //  daily counter
-int dailyPersonCountSent = 0;        // Daily person count in flight to Ubidots
-bool dataInFlight = false;           // Tracks if we have sent data but not yet cleared it from counts until we get confirmation
-byte currentHourlyPeriod;            // This is where we will know if the period changed
-byte currentDailyPeriod;             // We will keep daily counts as well as period counts
+byte lastHour = 0;                          // For recording the startup values
+byte lastDate = 0;                          // These values make sure we record events if time has lapsed
+int hourlyDurationCount = 0;                // This is where we count the duration "periods" which are defined as 1.5x debounce
+int hourlyDurationCountSent = 0;            // Keep track of counts in flight
+int hourlyPersonCount = 0;                  // hourly counter
+int hourlyPersonCountSent = 0;              // Person count in flight to Ubidots
+int dailyPersonCount = 0;                   // daily counter
+bool dataInFlight = false;                  // Tracks if we have sent data but not yet cleared it from counts until we get confirmation
+int averageHourlyDuration = 0;              // Running average duration value
+byte currentHourlyPeriod;                   // This is where we will know if the period changed
+byte currentDailyPeriod;                    // We will keep daily counts as well as period counts
 
 // PIR Sensor variables
 volatile bool sensorDetect = false;         // This is the flag that an interrupt is triggered
+volatile unsigned long lastEvent = 0;       // Keeps track of the last time there was an event
 
 // Battery monitor
 int stateOfCharge = 0;                      // stores battery charge level value
@@ -122,6 +125,7 @@ void setup()                                                      // Note: Disco
 {
   pinMode(intPin,INPUT);                                          // PIR Sensor Interrupt pin
   pinMode(wakeUpPin,INPUT);                                       // This pin is active HIGH
+  pinMode(userSwitch,INPUT);                                      // Momentary contact button on board for direct user input
   pinMode(blueLED, OUTPUT);                                       // declare the Blue LED Pin as an output
   pinMode(tmp36Shutdwn,OUTPUT);                                   // Supports shutting down the TMP-36 to save juice
   digitalWrite(tmp36Shutdwn, HIGH);                               // Turns on the temp sensor
@@ -142,6 +146,7 @@ void setup()                                                      // Note: Disco
 
   Particle.variable("HourlyCount", hourlyPersonCount);                // Define my Particle variables
   Particle.variable("DailyCount", dailyPersonCount);                  // Note: Don't have to be connected for any of this!!!
+  Particle.variable("Debounce", debounce);
   Particle.variable("Signal", Signal);
   Particle.variable("ResetCount", resetCount);
   Particle.variable("Temperature",temperatureF);
@@ -154,7 +159,7 @@ void setup()                                                      // Note: Disco
   Particle.function("resetCounts",resetCounts);
   Particle.function("Reset",resetNow);
   Particle.function("HardReset",hardResetNow);
-  Particle.function("SleepInFive",sleepInFive);
+  Particle.function("SetDebounce",setDebounce);
   Particle.function("SendNow",sendNow);
   Particle.function("LowPowerMode",setLowPowerMode);
 
@@ -175,15 +180,21 @@ void setup()                                                      // Note: Disco
     FRAMwrite8(RESETCOUNT,static_cast<uint8_t>(resetCount));            // If so, store incremented number - watchdog must have done This
   }
 
-  currentControlRegister = FRAMread8(CONTROLREGISTER);                  // Read the Control Register for system modes
-  // lowPowerMode = (00000001 & currentControlRegister);                   // Bitwise AND to set the lowPowerMode flag from control Register
-  // For Testing - Start
-  lowPowerMode = 0;
-  FRAMwrite8(CONTROLREGISTER,0);
-  // For testing - End
-  if (!lowPowerMode) connectToParticle();
+  debounce = FRAMread8(DEBOUNCEADDR)*10;                                // Load debounce value from FRAM
 
-  Time.zone(-5);                                                        // Set time zone to Eastern USA daylight saving time
+  Time.zone(LOCALTIMEZONE);                                             // Set time zone as set in the #define section
+
+  controlRegister = FRAMread8(CONTROLREGISTER);                         // Read the Control Register for system modes
+  lowPowerMode = (0b00000001 & controlRegister);                        // Bitwise AND to set the lowPowerMode flag from control Register
+
+  if (!digitalRead(userSwitch) && lowPowerMode) {                      // Rescue mode to locally take lowPowerMode so you can connect to device
+    lowPowerMode = false;                                               // Press the user switch while resetting the device
+    controlRegister = (0b1111110 & controlRegister);                    // Turn off Low power mode
+    FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
+  }
+
+  if (!lowPowerMode && !(Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) connectToParticle();  // If not lowpower or sleeping, we can connect
+
   takeMeasurements();
   StartStopTest(1);                                                     // Default action is for the test to be running
   timeTillSleep = sleepDelay;                                           // Set initial delay for 60 seconds
@@ -199,12 +210,14 @@ void loop()
     if(hourlyPersonCountSent) {   // Cleared here as there could be counts coming in while "in Flight"
       hourlyPersonCount -= hourlyPersonCountSent;    // Confirmed that count was recevied - clearing
       FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-      hourlyPersonCountSent = 0;
+      hourlyDurationCount -= hourlyDurationCountSent;    // Confirmed that count was recevied - clearing
+      FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Duration Count to memory
+      hourlyPersonCountSent = hourlyDurationCountSent = 0;
     }
     if (sensorDetect) recordCount();                                                                    // The ISR had raised the sensor flag
     if ((millis() >= (lastEvent + timeTillSleep)) && lowPowerMode) state = NAPPING_STATE;               // Too long since last sensor flag - time to nap
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;                                    // We want to report on the hour but not after bedtime
-    if ((Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) state = SLEEPING_STATE; // The park is closed, time to sleep
+    if ((Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) state = SLEEPING_STATE;                 // The park is closed, time to sleep
     if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;                                               // The battery is low - sleep
     break;
 
@@ -225,6 +238,8 @@ void loop()
       FRAMwrite8(RESETCOUNT,resetCount);
       hourlyPersonCount = 0;
       FRAMwrite16(CURRENTHOURLYCOUNTADDR, 0);
+      hourlyDurationCount = 0;
+      FRAMwrite16(CURRENTHOURLYDURATIONADDR, 0);
       ledState = false;
       digitalWrite(blueLED,LOW);                                // Turn off the LED
       digitalWrite(tmp36Shutdwn, LOW);                          // Turns off the temp sensor
@@ -301,7 +316,7 @@ void loop()
     break;
 
   case ERROR_STATE:                                          // To be enhanced - where we deal with errors
-    if (!waiting)                                            // Will use this flag to wiat 30 seconds before reset
+    if (!waiting)                                            // Will use this flag to wait 30 seconds before reset
     {
       waiting = true;
       resetWaitTimeStamp = millis();
@@ -320,18 +335,32 @@ void loop()
 
 void recordCount()                                          // Handles counting when the sensor triggers
 {
+  char data[256];                                           // Store the date in this character array - not global
   sensorDetect = false;                                     // Reset the flag
-  if (digitalRead(intPin)) {
-    Particle.publish("State","Counting");
-    lastEvent = millis();                                   // Important to keep from napping too soon
+  unsigned long threshold = 1.5 * debounce;
+  unsigned long howLong = millis() - lastEvent;
+  if (howLong > threshold) {                  // So, if there has been more than 1.5x debounce, will count as a seprate "person count"
     t = Time.now();
-    hourlyPersonCount++;                    // Increment the PersonCount
+    lastEvent = millis();                                   // If it is an event then we reset the lastEvent value
+    hourlyPersonCount++;                                    // Increment the PersonCount
     FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-    dailyPersonCount++;                    // Increment the PersonCount
+    hourlyDurationCount++;                                  // Increment the duration counter as well
+    FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
+    dailyPersonCount++;                                     // Increment the PersonCount
     FRAMwrite16(CURRENTDAILYCOUNTADDR, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
-    FRAMwrite32(CURRENTCOUNTSTIME, t);   // Write to FRAM - this is so we know when the last counts were saved
-    ledState = !ledState;              // toggle the status of the LEDPIN:
-    digitalWrite(blueLED, ledState);    // update the LED pin itself
+    FRAMwrite32(CURRENTCOUNTSTIME, t);                      // Write to FRAM - this is so we know when the last counts were saved
+    ledState = !ledState;                                   // toggle the status of the LEDPIN:
+    digitalWrite(blueLED, ledState);                        // update the LED pin itself
+    snprintf(data, sizeof(data), "New visit, houlry count: %i",hourlyPersonCount);
+    Particle.publish("Count",data);
+  }
+  else {                                                   // In this case, it is the same person who is loitering in the detection area
+    hourlyDurationCount++;                                 // Increment the duration counter only
+    FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
+    averageHourlyDuration = ((hourlyDurationCount * 1.5 * (debounce/1000)) / hourlyPersonCount);
+    snprintf(data, sizeof(data), "Same visit, hourly average duration: %i (duration / person) (%i / %i)",averageHourlyDuration,hourlyDurationCount,hourlyPersonCount);
+    Particle.publish("Count",data);
+    lastEvent = millis();                                   // If it is an event then we reset the lastEvent value
   }
   if (!digitalRead(userSwitch)) {     // A low value means someone is pushing this button
     state = REPORTING_STATE;          // If so, connect and send data - this let's us interact with the device if needed
@@ -350,6 +379,7 @@ void StartStopTest(boolean startTest)  // Since the test can be started from the
      lastDate = Time.day(unixTime);
      dailyPersonCount = FRAMread16(CURRENTDAILYCOUNTADDR);  // Load Daily Count from memory
      hourlyPersonCount = FRAMread16(CURRENTHOURLYCOUNTADDR);  // Load Hourly Count from memory
+     hourlyDurationCount = FRAMread16(CURRENTHOURLYDURATIONADDR);  // Load Hourly Duration Count from memory
      if (currentHourlyPeriod != lastHour) LogHourlyEvent();
  }
  else {
@@ -357,6 +387,7 @@ void StartStopTest(boolean startTest)  // Since the test can be started from the
      t = Time.now();
      FRAMwrite16(CURRENTDAILYCOUNTADDR, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
      FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
+     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Duration Count to memory
      FRAMwrite32(CURRENTCOUNTSTIME, t);   // Write to FRAM - this is so we know when the last counts were saved
      hourlyPersonCount = 0;        // Reset Person Count
      dailyPersonCount = 0;         // Reset Person Count
@@ -378,9 +409,10 @@ void LogHourlyEvent() // Log Hourly Event()
 void sendEvent()
 {
   char data[256];                                         // Store the date in this character array - not global
-  snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF,resetCount);
-  Particle.publish("Ubidots-Hook", data, PRIVATE);
+  snprintf(data, sizeof(data), "{\"hourly\":%i, \"avgduration\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i}",hourlyPersonCount, averageHourlyDuration, dailyPersonCount, stateOfCharge, temperatureF,resetCount);
+  Particle.publish("Occupancy_Hook", data, PRIVATE);
   hourlyPersonCountSent = hourlyPersonCount; // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
+  hourlyDurationCountSent = hourlyDurationCount;
   currentHourlyPeriod = Time.hour();  // Change the time period
   dataInFlight = true; // set the data inflight flag
 }
@@ -440,13 +472,12 @@ int resetCounts(String command)   // Resets the current hourly and daily counts
   {
     FRAMwrite16(CURRENTDAILYCOUNTADDR, 0);   // Reset Daily Count in memory
     FRAMwrite16(CURRENTHOURLYCOUNTADDR, 0);  // Reset Hourly Count in memory
+    FRAMwrite16(CURRENTHOURLYDURATIONADDR, 0);  // Reset Hourly Duration Count in memory
     FRAMwrite8(RESETCOUNT,0);          // If so, store incremented number - watchdog must have done This
     resetCount = 0;
-    hourlyPersonCount = 0;                    // Reset count variables
+    hourlyPersonCount = hourlyDurationCount = 0;                    // Reset count variables
     dailyPersonCount = 0;
-    hourlyPersonCountSent = 0;                // In the off-chance there is data in flight
-    dailyPersonCountSent = 0;
-
+    hourlyPersonCountSent = hourlyDurationCountSent = 0;                // In the off-chance there is data in flight
     dataInFlight = false;
     return 1;
   }
@@ -457,8 +488,8 @@ int resetNow(String command)   // Will reset the Electron
 {
   if (command == "1")
   {
-    System.reset();
-    return 1;
+    System.reset();                           // This will reset the Electron Only
+    return 1;                                 // Unfortunately, this will never be sent
   }
   else return 0;
 }
@@ -467,21 +498,20 @@ int hardResetNow(String command)   // Will perform a hard reset on the Electron
 {
   if (command == "1")
   {
-    digitalWrite(hardResetPin,HIGH);
-    return 1;
+    digitalWrite(hardResetPin,HIGH);          // This will cut all power to the Electron AND the carrir board
+    return 1;                                 // Unfortunately, this will never be sent
   }
   else return 0;
 }
 
-int sleepInFive(String command)   // Will perform a hard reset on the Electron
+int setDebounce(String command)  // Will accept a new debounce value in the form "xxxx" where xxx is an integer for delay in mSec
 {
-  if (command == "1")
-  {
-    timeTillSleep = 300000;       // Set this equal to 5 minutes.  Will reset in the program once it goes to NAPPING_STATE
-    lastEvent = millis();
-    return 1;
-  }
-  else return 0;
+  char * pEND;
+  debounce = strtol(command,&pEND,10);                    // Looks for the first integer and interprets it
+  if ((debounce < 0) | (debounce > 5000)) return 0;       // Make sure it falls in a valid range or send a "fail" result
+  FRAMwrite8(DEBOUNCEADDR, debounce/10);                  // Remember we store debounce in cSec
+  napDelay = 2*debounce;                                  // These two are related
+  return 1;
 }
 
 
@@ -495,23 +525,23 @@ int sendNow(String command) // Function to force sending data in current hour
   else return 0;
 }
 
-int setLowPowerMode(String command)  // This is where we can put the device into low power mode if needed
+int setLowPowerMode(String command)                                   // This is where we can put the device into low power mode if needed
 {
   if (command != "1" && command != "0") return 0;                     // Before we begin, let's make sure we have a valid input
-  byte controlRegister = FRAMread8(CONTROLREGISTER);                  // Get the control register (generla approach)
-  if (command == "1")        // Look at command and see if we need to make a change
+  controlRegister = FRAMread8(CONTROLREGISTER);                       // Get the control register (generla approach)
+  if (command == "1")                                                 // Command calls for setting lowPowerMode
   {
     Particle.publish("Mode","Low Power");
     controlRegister = (0b00000001 | controlRegister);                  // If so, flip the lowPowerMode bit
     lowPowerMode = true;
   }
-  else if (command == "0")
+  else if (command == "0")                                            // Command calls for clearing lowPowerMode
   {
     Particle.publish("Mode","Normal Operations");
     controlRegister = (0b1111110 & controlRegister);                  // If so, flip the lowPowerMode bit
     lowPowerMode = false;
   }
-  FRAMwrite8(CONTROLREGISTER,controlRegister);
+  FRAMwrite8(CONTROLREGISTER,controlRegister);                         // Write to the control register
   return 1;
 }
 
@@ -527,7 +557,9 @@ int getTemperature()
 
 void sensorISR()
 {
-  sensorDetect = true;                                      // sets the sensor flag for the main loop
+  if ((millis()-lastEvent) > debounce) {                    // Can read millis() in an ISR but it won't increment
+    sensorDetect = true;                                    // sets the sensor flag for the main loop
+  }
 }
 
 void watchdogISR()

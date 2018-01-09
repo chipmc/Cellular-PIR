@@ -77,7 +77,7 @@ void ResetFRAM()  // This will reset the FRAM - set the version and preserve del
 {
     // Note - have to hard code the size here due to this issue - http://www.microchip.com/forums/m501193.aspx
     byte tempControlReg = FRAMread8(CONTROLREGISTER);
-    Serial.println("Resetting Memory");
+    Particle.publish("FRAM","Resetting in progress");
     for (unsigned long i=4; i < 32768; i++) {  // Start at 4 to not overwrite debounce and sensitivity
         FRAMwrite8(i,0x0);
         if (i==8192) Serial.println(F("25% done"));
