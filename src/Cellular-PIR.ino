@@ -1,7 +1,8 @@
 /*
 * Project Cellular-PIR - converged software for Low Power and Solar
 * Description: Cellular Connected Data Logger for Utility and Solar powered installations
-* Author: Chip McClelland
+* Author: Chip McClelland chip@mcclellands.org
+* Sponsor: Simple Sense - alex@simplesense.io  www.simplesense.io
 * Date:28 November 2017
 */
 
@@ -34,16 +35,20 @@
 #define CURRENTHOURLYCOUNTADDR 0x8  // Current Hourly Count - 16 bits
 #define CURRENTHOURLYDURATIONADDR 0xA   // Current Hourly Duration Count - 16 bits
 #define CURRENTDAILYCOUNTADDR 0xC   // Current Daily Count - 16 bits
-#define CURRENTCOUNTSTIME 0xC       // Time of last count - 32 bits
+#define CURRENTCOUNTSTIME 0xE       // Time of last count - 32 bits
                                     // Six open bytes here which takes us to the third word
 //These are the hourly and daily offsets that make up the respective words
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.30"
-#define PARKCLOSES 20
+#define SOFTWARERELEASENUMBER "0.31"
+#define PARKCLOSES 19
 #define PARKOPENS 6
 #define LOCALTIMEZONE -5
+
+// Here are some switches to support pilots vs. production
+const bool solarPowered = false;
+const bool verboseMode = false;
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
@@ -291,7 +296,7 @@ void loop()
     takeMeasurements();
     if (Status[0] != '\0')
     {
-      Particle.publish("Status",Status);  // Will continue - even if not connected.
+      if (verboseMode) Particle.publish("Status",Status);  // Will continue - even if not connected.
       Status[0] = '\0';
     }
     LogHourlyEvent();
@@ -299,7 +304,7 @@ void loop()
     publishTimeStamp = millis();
     digitalWrite(donePin,HIGH);
     digitalWrite(donePin,LOW);                          // Pet the watchdog once an hour
-    Particle.publish("State","Waiting for Response");
+    if (verboseMode) Particle.publish("State","Waiting for Response");
     state = RESP_WAIT_STATE;                            // Wait for Response
     } break;
 
@@ -307,7 +312,7 @@ void loop()
     if (!dataInFlight)                                  // Response received
     {
       state = IDLE_STATE;
-      Particle.publish("State","Idle");
+      if (verboseMode) Particle.publish("State","Idle");
     }
     else if (millis() >= (publishTimeStamp + webhookWaitTime)) {
       state = ERROR_STATE;  // Response timed out
@@ -352,17 +357,23 @@ void recordCount()                                          // Handles counting 
     ledState = !ledState;                                   // toggle the status of the LEDPIN:
     digitalWrite(blueLED, ledState);                        // update the LED pin itself
     snprintf(data, sizeof(data), "New visit, houlry count: %i",hourlyPersonCount);
-    Particle.publish("Count",data);
+    if (verboseMode) Particle.publish("Count",data);
   }
   else {                                                   // In this case, it is the same person who is loitering in the detection area
     hourlyDurationCount++;                                 // Increment the duration counter only
     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
     averageHourlyDuration = ((hourlyDurationCount * 1.5 * (debounce/1000)) / hourlyPersonCount);
     snprintf(data, sizeof(data), "Same visit, hourly average duration: %i (duration / person) (%i / %i)",averageHourlyDuration,hourlyDurationCount,hourlyPersonCount);
-    Particle.publish("Count",data);
+    if (verboseMode) Particle.publish("Count",data);
     lastEvent = millis();                                   // If it is an event then we reset the lastEvent value
   }
-  if (!digitalRead(userSwitch)) {     // A low value means someone is pushing this button
+  if (!digitalRead(userSwitch)) {     // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
+    if (lowPowerMode) {
+      Particle.publish("Mode","Normal Operations");
+      controlRegister = (0b1111110 & controlRegister);                  // Will set the lowPowerMode bit to zero
+      lowPowerMode = false;
+
+    }
     state = REPORTING_STATE;          // If so, connect and send data - this let's us interact with the device if needed
   }
 }
@@ -604,12 +615,20 @@ void takeMeasurements() {
 }
 
 void PMICreset() {
-  power.begin();                                                  // Settings for Solar powered power management
+  power.begin();                                            // Settings for Solar powered power management
   power.disableWatchdog();
   power.disableDPDM();
-  power.setInputVoltageLimit(4840);     //Set the lowest input voltage to 4.84 volts. This keeps my 5v solar panel from operating below 4.84 volts (defauly 4360)
-  power.setInputCurrentLimit(900);                                // default is 900mA
-  power.setChargeCurrent(0,0,0,0,0,0);                            // default is 512mA matches my 3W panel
-  power.setChargeVoltage(4112);                                   // default is 4.112V termination voltage
+  if (solarPowered) {
+    power.setInputVoltageLimit(4840);                       // Set the lowest input voltage to 4.84 volts best setting for 6V solar panels
+    power.setInputCurrentLimit(900);                        // default is 900mA
+    power.setChargeCurrent(0,0,1,0,0,0);                    // default is 512mA matches my 3W panel
+    power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
+  }
+  else  {
+    power.setInputVoltageLimit(4360);                       // This is the default value for the Electron
+    power.setInputCurrentLimit(900);                        // default is 900mA
+    power.setChargeCurrent(0,1,1,0,0,0);                    // default is 512mA matches my 3W panel
+    power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
+  }
   power.enableDPDM();
 }
