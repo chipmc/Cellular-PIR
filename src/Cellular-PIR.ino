@@ -13,7 +13,7 @@
     enabling sleep  2) Low Battery Mode - reduced functionality to preserve battery charge
 
     The mode will be set and recoded in the CONTROLREGISTER so resets will not change the mode
-    Control Register - bits 7-2 reserved, 1 - Low Battery Mode, 0 - Low Power Mode
+    Control Register - bits 7-4, 3 - Verbose Mode, 2- Solar Power Mode, 1 - Low Battery Mode, 0 - Low Power Mode
 */
 
 // Easy place to change global numbers
@@ -26,29 +26,27 @@
 // First Word - 8 bytes for setting global values
 #define VERSIONADDR 0x0             // Where we store the memory map version number
 #define SENSITIVITYADDR 0x1         // Sensitivity for Accelerometer sensors
-#define DEBOUNCEADDR 0x2            // One uint8_t for debounce (stored in cSec mult by 10 for mSec)
+#define GRANULARITYADDR 0x2          // One uint8_t for granularity (stored in seconds)
 #define RESETCOUNT 0x3              // This is where we keep track of how often the Electron was reset
-                                    // One byte is open here
-#define HOURLYPOINTERADDR 0x5       // Two bytes for hourly pointer
+#define KEEPSESSIONADDR 0x4         // Here we store the percent that we add to granularity to get the Keep Session value
+#define TIMEZONEADDR  0x5           // Store the local time zone data
+        //  OPEN BYTE
 #define CONTROLREGISTER 0x7         // This is the control register for storing the current state - future use
 //Second and Third words bytes for storing current counts
 #define CURRENTHOURLYCOUNTADDR 0x8  // Current Hourly Count - 16 bits
 #define CURRENTHOURLYDURATIONADDR 0xA   // Current Hourly Duration Count - 16 bits
 #define CURRENTDAILYCOUNTADDR 0xC   // Current Daily Count - 16 bits
 #define CURRENTCOUNTSTIME 0xE       // Time of last count - 32 bits
-                                    // Six open bytes here which takes us to the third word
+#define HOURLYPOINTERADDR 0x11      // Two bytes for hourly pointer
+                                    // Four open bytes here which takes us to the third word
 //These are the hourly and daily offsets that make up the respective words
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.31"
-#define PARKCLOSES 19
+#define SOFTWARERELEASENUMBER "0.41"
+#define PARKCLOSES 23
 #define PARKOPENS 6
-#define LOCALTIMEZONE -5
 
-// Here are some switches to support pilots vs. production
-const bool solarPowered = false;
-const bool verboseMode = false;
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
@@ -83,9 +81,6 @@ unsigned long resetWaitTime = 30000;        // Will wait this lonk before resett
 unsigned long sleepDelay = 60000;           // Longer delay before sleep when booting up or on the hour - gives time to flash
 unsigned long timeTillSleep = 0;            // This will either be short or long depending on nap or sleep
 
-unsigned long napDelay = 3000;              // Normal amount of time after event before taking a nap - it also sets the unit of measure for a "visitor"
-unsigned long debounce = 1000;              // Triggers less than this amount will be ignored
-
 bool waiting = false;                       // Keeps track of things that are in flight - enables non-blocking code
 bool readyForBed = false;                   // Keeps track of the things that you do once before sleep
 
@@ -96,13 +91,20 @@ bool ledState = LOW;                        // variable used to store the last L
 const char* releaseNumber = SOFTWARERELEASENUMBER;  // Displays the release on the menu
 int lowBattLimit = 30;                      // Trigger for Low Batt State
 bool lowPowerMode;                          // Flag for Low Power Mode operations
+bool lowBatteryMode;                        // Battery is critical - must not connect and will sleep
 byte controlRegister;                       // Stores the control register values
+bool solarPowerMode = false;
+bool verboseMode = true;
+bool inTest = false;                  // Are we in a test or not
+retained char Signal[17];             // Used to communicate Wireless RSSI and Description
+char Status[17] = "";                 // Used to communciate updates on System Status
+const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 
 // FRAM and Unix time variables
 time_t t;
 byte lastHour = 0;                          // For recording the startup values
 byte lastDate = 0;                          // These values make sure we record events if time has lapsed
-int hourlyDurationCount = 0;                // This is where we count the duration "periods" which are defined as 1.5x debounce
+int hourlyDurationCount = 0;                // This is where we count the duration "periods" which are defined by the value of granularity
 int hourlyDurationCountSent = 0;            // Keep track of counts in flight
 int hourlyPersonCount = 0;                  // hourly counter
 int hourlyPersonCountSent = 0;              // Person count in flight to Ubidots
@@ -115,16 +117,15 @@ byte currentDailyPeriod;                    // We will keep daily counts as well
 // PIR Sensor variables
 volatile bool sensorDetect = false;         // This is the flag that an interrupt is triggered
 volatile unsigned long lastEvent = 0;       // Keeps track of the last time there was an event
+float keepSessionFactor;                    // This is the amount of time that we will wait before declaring a new session (expressed as a factor of granularity)
+unsigned long napDelay;                     // Normal amount of time after event before taking a nap - it is defined as 10% more than the granularity * keepSessionFactor
+unsigned long granularity;                  // Triggers less than this amount will be ignored
+int keepSession;                            // The value of the time we will keep a session alive - in seconds
+
 
 // Battery monitor
 int stateOfCharge = 0;                      // stores battery charge level value
 
-//Menu and Program Variables
-uint32_t lastBump = 0;                // set the time of an event
-bool inTest = false;                  // Are we in a test or not
-retained char Signal[17];             // Used to communicate Wireless RSSI and Description
-char Status[17] = "";                 // Used to communciate updates on System Status
-const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 
 void setup()                                                      // Note: Disconnected Setup()
 {
@@ -151,7 +152,8 @@ void setup()                                                      // Note: Disco
 
   Particle.variable("HourlyCount", hourlyPersonCount);                // Define my Particle variables
   Particle.variable("DailyCount", dailyPersonCount);                  // Note: Don't have to be connected for any of this!!!
-  Particle.variable("Debounce", debounce);
+  Particle.variable("granularity", granularity);
+  Particle.variable("keepSession",keepSession);
   Particle.variable("Signal", Signal);
   Particle.variable("ResetCount", resetCount);
   Particle.variable("Temperature",temperatureF);
@@ -159,14 +161,17 @@ void setup()                                                      // Note: Disco
   Particle.variable("stateOfChg", stateOfCharge);
   Particle.variable("lowPowerMode",lowPowerMode);
 
-  Particle.function("startStop", startStop);                          // Define my Particle functions
-  Particle.function("resetFRAM", resetFRAM);
-  Particle.function("resetCounts",resetCounts);
-  Particle.function("Reset",resetNow);
-  Particle.function("HardReset",hardResetNow);
-  Particle.function("SetDebounce",setDebounce);
-  Particle.function("SendNow",sendNow);
+  Particle.function("Reset-FRAM", resetFRAM);
+  Particle.function("Reset-Counts",resetCounts);
+  Particle.function("Soft-Reset",resetNow);
+  Particle.function("Hard-Reset",hardResetNow);
+  Particle.function("Granularity",setGranularity);
+  Particle.function("KeepSession",setKeepSession);
+  Particle.function("Send-Now",sendNow);
   Particle.function("LowPowerMode",setLowPowerMode);
+  Particle.function("Solar-Mode",setSolarMode);
+  Particle.function("Verbose-Mode",setVerboseMode);
+  Particle.function("Set-Timezone",setTimeZone);
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
     snprintf(Status,13,"Missing FRAM");                                 // Can't communicate with FRAM - fatal error
@@ -185,12 +190,20 @@ void setup()                                                      // Note: Disco
     FRAMwrite8(RESETCOUNT,static_cast<uint8_t>(resetCount));            // If so, store incremented number - watchdog must have done This
   }
 
-  debounce = FRAMread8(DEBOUNCEADDR)*10;                                // Load debounce value from FRAM
+  // Here we load the values for granularity and keepSession from FRAM
+  granularity = FRAMread8(GRANULARITYADDR);                                // Load granularity value from FRAM - seconds
+  keepSessionFactor = 1 + ((float)FRAMread8(KEEPSESSIONADDR)/100.0);              // Load the value (in percent) that will scale granularity
+  keepSession = int(granularity * keepSessionFactor);                   // keepSession - The time to keep a session alive - in seconds
+  napDelay = int(granularity * (keepSessionFactor+0.1));                // NapDelay is 10% longer than the keepSession value - in seconds
 
-  Time.zone(LOCALTIMEZONE);                                             // Set time zone as set in the #define section
+  int8_t tempTimeZoneOffset = FRAMread8(TIMEZONEADDR);                  // Load Time zone data from FRAM
+  Time.zone((float)tempTimeZoneOffset);
 
-  controlRegister = FRAMread8(CONTROLREGISTER);                         // Read the Control Register for system modes
-  lowPowerMode = (0b00000001 & controlRegister);                        // Bitwise AND to set the lowPowerMode flag from control Register
+  controlRegister = FRAMread8(CONTROLREGISTER);                         // Read the Control Register for system modes so they stick even after reset
+  lowPowerMode = (0b00000001 & controlRegister);                        // lowPowerMode
+  lowBatteryMode = (0b000000010 & controlRegister);                     // lowBatteryMode
+  solarPowerMode = (0b00000100 & controlRegister);                      // solarPowerMode
+  verboseMode = (0b00001000 & controlRegister);                         // verboseMode
 
   if (!digitalRead(userSwitch) && lowPowerMode) {                      // Rescue mode to locally take lowPowerMode so you can connect to device
     lowPowerMode = false;                                               // Press the user switch while resetting the device
@@ -198,7 +211,7 @@ void setup()                                                      // Note: Disco
     FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
   }
 
-  if (!lowPowerMode && !(Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) connectToParticle();  // If not lowpower or sleeping, we can connect
+  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) connectToParticle();  // If not lowpower or sleeping, we can connect
 
   takeMeasurements();
   StartStopTest(1);                                                     // Default action is for the test to be running
@@ -342,12 +355,11 @@ void recordCount()                                          // Handles counting 
 {
   char data[256];                                           // Store the date in this character array - not global
   sensorDetect = false;                                     // Reset the flag
-  unsigned long threshold = 1.5 * debounce;
-  unsigned long howLong = millis() - lastEvent;
-  if (howLong > threshold) {                  // So, if there has been more than 1.5x debounce, will count as a seprate "person count"
+  if (millis() - lastEvent > keepSession*1000) {            // Check to see if this is a new session or just a keep session event
     t = Time.now();
-    lastEvent = millis();                                   // If it is an event then we reset the lastEvent value
+    lastEvent = millis();                                   // Each time this routine is triggered, it is an event which keeps the session alive
     hourlyPersonCount++;                                    // Increment the PersonCount
+    hourlyDurationCount++;                                  // Increment this as well since we don't count the last one before napping
     FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
     hourlyDurationCount++;                                  // Increment the duration counter as well
     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
@@ -356,26 +368,26 @@ void recordCount()                                          // Handles counting 
     FRAMwrite32(CURRENTCOUNTSTIME, t);                      // Write to FRAM - this is so we know when the last counts were saved
     ledState = !ledState;                                   // toggle the status of the LEDPIN:
     digitalWrite(blueLED, ledState);                        // update the LED pin itself
-    snprintf(data, sizeof(data), "New visit, houlry count: %i",hourlyPersonCount);
+    snprintf(data, sizeof(data), "New visit, hourlry count: %i",hourlyPersonCount);
     if (verboseMode) Particle.publish("Count",data);
   }
-  else {                                                   // In this case, it is the same person who is loitering in the detection area
+  else if (millis() - lastEvent > granularity*1000) {      // In this case, it is the same person who is loitering in the detection area
+    lastEvent = millis();                                  // Each time this routine is triggered, it is an event which keeps the session alive
     hourlyDurationCount++;                                 // Increment the duration counter only
     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
-    averageHourlyDuration = ((hourlyDurationCount * 1.5 * (debounce/1000)) / hourlyPersonCount);
+    averageHourlyDuration = int((hourlyDurationCount * granularity) / hourlyPersonCount);
     snprintf(data, sizeof(data), "Same visit, hourly average duration: %i (duration / person) (%i / %i)",averageHourlyDuration,hourlyDurationCount,hourlyPersonCount);
     if (verboseMode) Particle.publish("Count",data);
-    lastEvent = millis();                                   // If it is an event then we reset the lastEvent value
   }
-  if (!digitalRead(userSwitch)) {     // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
+  if (!digitalRead(userSwitch)) {                         // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
     if (lowPowerMode) {
       Particle.publish("Mode","Normal Operations");
-      controlRegister = (0b1111110 & controlRegister);                  // Will set the lowPowerMode bit to zero
+      controlRegister = (0b1111110 & controlRegister);     // Will set the lowPowerMode bit to zero
       lowPowerMode = false;
-
     }
-    state = REPORTING_STATE;          // If so, connect and send data - this let's us interact with the device if needed
+    state = REPORTING_STATE;                              // If so, connect and send data - this let's us interact with the device if needed
   }
+
 }
 
 void StartStopTest(boolean startTest)  // Since the test can be started from the serial menu or the Simblee - created a function
@@ -452,20 +464,86 @@ void getSignalStrength()
     snprintf(Signal,17, "%s: %d", levels[strength], rssi);
 }
 
-int startStop(String command)   // Will reset the local counts
+int getTemperature()
 {
-  if (command == "1" && !inTest)
-  {
-    StartStopTest(1);
-    return 1;
-  }
-  else if (command == "0" && inTest)
-  {
-    StartStopTest(0);
-    return 1;
-  }
-  else return 0;
+  int reading = analogRead(tmp36Pin);   //getting the voltage reading from the temperature sensor
+  float voltage = reading * 3.3;        // converting that reading to voltage, for 3.3v arduino use 3.3
+  voltage /= 4096.0;                    // Electron is different than the Arduino where there are only 1024 steps
+  int temperatureC = int(((voltage - 0.5) * 100));  //converting from 10 mv per degree with 500 mV offset to degrees ((voltage - 500mV) times 100) - 5 degree calibration
+  temperatureF = int((temperatureC * 9.0 / 5.0) + 32.0);  // now convert to Fahrenheit
+  return temperatureF;
 }
+
+void sensorISR()
+{
+    sensorDetect = true;                                    // sets the sensor flag for the main loop
+}
+
+void watchdogISR()
+{
+  digitalWrite(donePin, HIGH);                              // Pet the watchdog
+  digitalWrite(donePin, LOW);
+}
+
+bool connectToParticle()
+{
+  if (!Cellular.ready())
+  {
+    Cellular.on();                                           // turn on the Modem
+    Cellular.connect();                                      // Connect to the cellular network
+    if(!waitFor(Cellular.ready,90000)) return false;         // Connect to cellular - give it 90 seconds
+  }
+  Particle.process();
+  Particle.connect();                                      // Connect to Particle
+  if(!waitFor(Particle.connected,30000)) return false;     // Connect to Particle - give it 30 seconds
+  Particle.process();
+  return true;
+}
+
+bool disconnectFromParticle()
+{
+  Particle.disconnect();                                   // Disconnect from Particle in prep for sleep
+  waitFor(notConnected,10000);
+  Cellular.disconnect();                                   // Disconnect from the cellular network
+  delay(3000);
+  Cellular.off();                                           // Turn off the cellular modem
+  return true;
+}
+
+bool notConnected() {
+  return !Particle.connected();                             // This is a requirement to use waitFor
+}
+
+void takeMeasurements() {
+  if (Cellular.ready()) getSignalStrength();                // Test signal strength if the cellular modem is on and ready
+  getTemperature();                                         // Get Temperature at startup as well
+  stateOfCharge = int(batteryMonitor.getSoC());             // Percentage of full charge
+}
+
+void PMICreset() {
+  power.begin();                                            // Settings for Solar powered power management
+  power.disableWatchdog();
+  power.disableDPDM();
+  if (solarPowerMode) {
+    power.setInputVoltageLimit(4840);                       // Set the lowest input voltage to 4.84 volts best setting for 6V solar panels
+    power.setInputCurrentLimit(900);                        // default is 900mA
+    power.setChargeCurrent(0,0,1,0,0,0);                    // default is 512mA matches my 3W panel
+    power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
+  }
+  else  {
+    power.setInputVoltageLimit(4208);                       // This is the default value for the Electron
+    power.setInputCurrentLimit(1500);                       // default is 1500mA
+    power.setChargeCurrent(0,1,1,0,0,0);                    // default is 2048mA (011000) = 512mA+1024mA+512mA)
+    power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
+  }
+  power.enableDPDM();
+}
+
+
+/* These are the particle functions that allow you to configure and run the device
+ * They are intended to allow for customization and control during installations
+ * and to allow for management.
+*/
 
 int resetFRAM(String command)   // Will reset the local counts
 {
@@ -515,13 +593,33 @@ int hardResetNow(String command)   // Will perform a hard reset on the Electron
   else return 0;
 }
 
-int setDebounce(String command)  // Will accept a new debounce value in the form "xxxx" where xxx is an integer for delay in mSec
+int setGranularity(String command)  // Will accept a new granularity value in the form "xxx" where xxx is an integer for delay in seconds
 {
   char * pEND;
-  debounce = strtol(command,&pEND,10);                    // Looks for the first integer and interprets it
-  if ((debounce < 0) | (debounce > 5000)) return 0;       // Make sure it falls in a valid range or send a "fail" result
-  FRAMwrite8(DEBOUNCEADDR, debounce/10);                  // Remember we store debounce in cSec
-  napDelay = 2*debounce;                                  // These two are related
+  char data[256];
+  byte tempGranularity = strtol(command,&pEND,10);                      // Looks for the first integer and interprets it
+  if ((tempGranularity < 0) | (tempGranularity > 255)) return 0;        // Make sure it falls in a valid range or send a "fail" result
+  granularity = tempGranularity;                                        // Valid value
+  FRAMwrite8(GRANULARITYADDR, granularity);                             // Remember we store granularity in Sec
+  keepSession = int(granularity * keepSessionFactor);                   // keepSession - The time to keep a session alive - in seconds
+  napDelay = int(granularity * (keepSessionFactor + 0.1));              // These two are related
+  snprintf(data, sizeof(data), "Values are: granularity: %i, keepSessionFactor: %.1f, keepSession: %i, napDelay: %i",granularity,keepSessionFactor,keepSession,napDelay);
+  if (verboseMode) Particle.publish("Variables",data);
+  return 1;
+}
+
+int setKeepSession(String command)  // Will accept a new keep session value in the form "xx" where xxx is the amount in % that keep alive is greater than granularity
+{
+  char * pEND;
+  char data[256];
+  byte tempKeepSessionPercent = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  if ((tempKeepSessionPercent < 0) | (tempKeepSessionPercent > 200)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  FRAMwrite8(KEEPSESSIONADDR,tempKeepSessionPercent);
+  keepSessionFactor = 1.0 + ((float)tempKeepSessionPercent/100.0);
+  keepSession = int(granularity * keepSessionFactor);                   // keepSession - The time to keep a session alive - in seconds
+  napDelay = int(granularity * (keepSessionFactor+0.1));                // NapDelay is 10% longer than the keepSession value - in seconds
+  snprintf(data, sizeof(data), "Values are: granularity: %i, keepSessionFactor: %.2f, keepSession: %i, napDelay: %i",granularity,keepSessionFactor,keepSession,napDelay);
+  if (verboseMode) Particle.publish("Variables",data);
   return 1;
 }
 
@@ -534,6 +632,70 @@ int sendNow(String command) // Function to force sending data in current hour
     return 1;
   }
   else return 0;
+}
+
+int setSolarMode(String command) // Function to force sending data in current hour
+{
+  if (command == "1")
+  {
+    solarPowerMode = true;
+    FRAMread8(CONTROLREGISTER);
+    controlRegister = (0b00000100 | controlRegister);          // Turn on solarPowerMode
+    FRAMwrite8(CONTROLREGISTER,controlRegister);               // Write it to the register
+    PMICreset();                                               // Change the power management Settings
+    Particle.publish("Mode","Set Solar Powered Mode");
+    return 1;
+  }
+  else if (command == "0")
+  {
+    solarPowerMode = false;
+    FRAMread8(CONTROLREGISTER);
+    controlRegister = (0b11111011 & controlRegister);           // Turn off solarPowerMode
+    FRAMwrite8(CONTROLREGISTER,controlRegister);                // Write it to the register
+    PMICreset();                                                // Change the power management settings
+    Particle.publish("Mode","Cleared Solar Powered Mode");
+    return 1;
+  }
+  else return 0;
+}
+
+int setVerboseMode(String command) // Function to force sending data in current hour
+{
+  if (command == "1")
+  {
+    verboseMode = true;
+    FRAMread8(CONTROLREGISTER);
+    controlRegister = (0b00001000 | controlRegister);                    // Turn on verboseMode
+    FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
+    Particle.publish("Mode","Set Verbose Mode");
+    return 1;
+  }
+  else if (command == "0")
+  {
+    verboseMode = false;
+    FRAMread8(CONTROLREGISTER);
+    controlRegister = (0b11110111 & controlRegister);                    // Turn off verboseMode
+    FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
+    Particle.publish("Mode","Cleared Verbose Mode");
+    return 1;
+  }
+  else return 0;
+}
+
+int setTimeZone(String command)
+{
+  char * pEND;
+  char data[256];
+  int8_t tempTimeZoneOffset = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  if ((tempTimeZoneOffset < -12) | (tempTimeZoneOffset > 12)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  Time.zone((float)tempTimeZoneOffset);
+  FRAMwrite8(TIMEZONEADDR,tempTimeZoneOffset);                             // Store the new value in FRAMwrite8
+  t = Time.now();
+  snprintf(data, sizeof(data), "Time zone offset %i",tempTimeZoneOffset);
+  Particle.publish("Time",data);
+  delay(1000);
+  Particle.publish("Time",Time.timeStr(t));
+  return 1;
 }
 
 int setLowPowerMode(String command)                                   // This is where we can put the device into low power mode if needed
@@ -554,81 +716,4 @@ int setLowPowerMode(String command)                                   // This is
   }
   FRAMwrite8(CONTROLREGISTER,controlRegister);                         // Write to the control register
   return 1;
-}
-
-int getTemperature()
-{
-  int reading = analogRead(tmp36Pin);   //getting the voltage reading from the temperature sensor
-  float voltage = reading * 3.3;        // converting that reading to voltage, for 3.3v arduino use 3.3
-  voltage /= 4096.0;                    // Electron is different than the Arduino where there are only 1024 steps
-  int temperatureC = int(((voltage - 0.5) * 100));  //converting from 10 mv per degree with 500 mV offset to degrees ((voltage - 500mV) times 100) - 5 degree calibration
-  temperatureF = int((temperatureC * 9.0 / 5.0) + 32.0);  // now convert to Fahrenheit
-  return temperatureF;
-}
-
-void sensorISR()
-{
-  if ((millis()-lastEvent) > debounce) {                    // Can read millis() in an ISR but it won't increment
-    sensorDetect = true;                                    // sets the sensor flag for the main loop
-  }
-}
-
-void watchdogISR()
-{
-  digitalWrite(donePin, HIGH);                              // Pet the watchdog
-  digitalWrite(donePin, LOW);
-}
-
-bool connectToParticle()
-{
-  if (!Cellular.ready())
-  {
-    Cellular.on();                                           // turn on the Modem
-    Cellular.connect();                                      // Connect to the cellular network
-    if(!waitFor(Cellular.ready,90000)) return false;         // Connect to cellular - give it 90 seconds
-  }
-  Particle.process();
-  Particle.connect();                                      // Connect to Particle
-  if(!waitFor(Particle.connected,30000)) return false;     // Connect to Particle - give it 30 seconds
-  Particle.process();
-  return true;
-}
-
-bool disconnectFromParticle()
-{
-  Particle.disconnect();                                   // Disconnect from Particle in prep for sleep
-  waitFor(notConnected,10000);
-  Cellular.disconnect();                                   // Disconnect from the cellular network
-  delay(3000);
-  Cellular.off();                                           // Turn off the cellular modem
-  return true;
-}
-
-bool notConnected() {
-  return !Particle.connected();                             // This is a requirement to use waitFor
-}
-
-void takeMeasurements() {
-  if (Cellular.ready()) getSignalStrength();                // Test signal strength if the cellular modem is on and ready
-  getTemperature();                                         // Get Temperature at startup as well
-  stateOfCharge = int(batteryMonitor.getSoC());             // Percentage of full charge
-}
-
-void PMICreset() {
-  power.begin();                                            // Settings for Solar powered power management
-  power.disableWatchdog();
-  power.disableDPDM();
-  if (solarPowered) {
-    power.setInputVoltageLimit(4840);                       // Set the lowest input voltage to 4.84 volts best setting for 6V solar panels
-    power.setInputCurrentLimit(900);                        // default is 900mA
-    power.setChargeCurrent(0,0,1,0,0,0);                    // default is 512mA matches my 3W panel
-    power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
-  }
-  else  {
-    power.setInputVoltageLimit(4360);                       // This is the default value for the Electron
-    power.setInputCurrentLimit(900);                        // default is 900mA
-    power.setChargeCurrent(0,1,1,0,0,0);                    // default is 512mA matches my 3W panel
-    power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
-  }
-  power.enableDPDM();
 }
