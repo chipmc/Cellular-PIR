@@ -43,8 +43,8 @@
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.41"
-#define PARKCLOSES 23
+#define SOFTWARERELEASENUMBER "0.43"
+#define PARKCLOSES 18
 #define PARKOPENS 6
 
 
@@ -64,21 +64,23 @@ enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, SLEEPING_STATE, NAPP
 State state = INITIALIZATION_STATE;
 
 // Pin Constants
-const int intPin = D3;                      // Acclerometer interrupt pin
-const int blueLED = D7;                     // This LED is on the Electron itself
-const int userSwitch = D5;                  // User switch with a pull-up resistor
-const int tmp36Pin = A0;                    // Simple Analog temperature sensor
-const int tmp36Shutdwn = B5;                // Can turn off the TMP-36 to save energy
-const int donePin = D6;                     // Pin the Electron uses to "pet" the watchdog
-const int wakeUpPin = A7;                   // This is the Particle Electron WKP pin
-const int hardResetPin = D4;                // Power Cycles the Electron and the Carrier Board
+const int tmp36Pin =      A0;               // Simple Analog temperature sensor
+const int wakeUpPin =     A7;               // This is the Particle Electron WKP pin
+const int enablePin =     B4;               // Hold low to power down the device - for GPS Equipped units
+const int tmp36Shutdwn =  B5;               // Can turn off the TMP-36 to save energy
+const int intPin =        D3;               // PIR Sensor Interrupt pin
+const int hardResetPin =  D4;               // Power Cycles the Electron and the Carrier Board
+const int userSwitch =    D5;               // User switch with a pull-up resistor
+const int donePin =       D6;               // Pin the Electron uses to "pet" the watchdog
+const int blueLED =       D7;               // This LED is on the Electron itself
+
 
 // Timing Variables
 unsigned long publishTimeStamp = 0;         // Keep track of when we publish a webhook
 unsigned long webhookWaitTime = 45000;      // How long will we let a webhook go before we give up
 unsigned long resetWaitTimeStamp = 0;       // Starts the reset wait clock
 unsigned long resetWaitTime = 30000;        // Will wait this lonk before resetting.
-unsigned long sleepDelay = 60000;           // Longer delay before sleep when booting up or on the hour - gives time to flash
+unsigned long sleepDelay = 90000;           // Longer delay before sleep when booting up or on the hour - gives time to flash
 unsigned long timeTillSleep = 0;            // This will either be short or long depending on nap or sleep
 
 bool waiting = false;                       // Keeps track of things that are in flight - enables non-blocking code
@@ -93,9 +95,8 @@ int lowBattLimit = 30;                      // Trigger for Low Batt State
 bool lowPowerMode;                          // Flag for Low Power Mode operations
 bool lowBatteryMode;                        // Battery is critical - must not connect and will sleep
 byte controlRegister;                       // Stores the control register values
-bool solarPowerMode = false;
-bool verboseMode = true;
-bool inTest = false;                  // Are we in a test or not
+bool solarPowerMode = false;                // Changes the PMIC settings
+bool verboseMode = true;                    // Enables more active communications for configutation and setup
 retained char Signal[17];             // Used to communicate Wireless RSSI and Description
 char Status[17] = "";                 // Used to communciate updates on System Status
 const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
@@ -129,6 +130,8 @@ int stateOfCharge = 0;                      // stores battery charge level value
 
 void setup()                                                      // Note: Disconnected Setup()
 {
+  pinMode(enablePin,OUTPUT);                                      // For GPS enabled units
+  digitalWrite(enablePin,LOW);                                    // Turn off GPS to save battery
   pinMode(intPin,INPUT);                                          // PIR Sensor Interrupt pin
   pinMode(wakeUpPin,INPUT);                                       // This pin is active HIGH
   pinMode(userSwitch,INPUT);                                      // Momentary contact button on board for direct user input
@@ -393,7 +396,6 @@ void recordCount()                                          // Handles counting 
 void StartStopTest(boolean startTest)  // Since the test can be started from the serial menu or the Simblee - created a function
 {
  if (startTest) {
-     inTest = true;
      currentHourlyPeriod = Time.hour();   // Sets the hour period for when the count starts (see #defines)
      currentDailyPeriod = Time.day();     // And the day  (see #defines)
      // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
@@ -406,7 +408,6 @@ void StartStopTest(boolean startTest)  // Since the test can be started from the
      if (currentHourlyPeriod != lastHour) LogHourlyEvent();
  }
  else {
-     inTest = false;
      t = Time.now();
      FRAMwrite16(CURRENTDAILYCOUNTADDR, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
      FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
@@ -476,7 +477,7 @@ int getTemperature()
 
 void sensorISR()
 {
-    sensorDetect = true;                                    // sets the sensor flag for the main loop
+  sensorDetect = true;                                    // sets the sensor flag for the main loop
 }
 
 void watchdogISR()
@@ -523,20 +524,18 @@ void takeMeasurements() {
 void PMICreset() {
   power.begin();                                            // Settings for Solar powered power management
   power.disableWatchdog();
-  power.disableDPDM();
   if (solarPowerMode) {
     power.setInputVoltageLimit(4840);                       // Set the lowest input voltage to 4.84 volts best setting for 6V solar panels
     power.setInputCurrentLimit(900);                        // default is 900mA
     power.setChargeCurrent(0,0,1,0,0,0);                    // default is 512mA matches my 3W panel
-    power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
+    power.setChargeVoltage(4208);                           // Allows us to charge cloe to 100% - battery can't go over 45 celcius
   }
   else  {
     power.setInputVoltageLimit(4208);                       // This is the default value for the Electron
-    power.setInputCurrentLimit(1500);                       // default is 1500mA
+    power.setInputCurrentLimit(1500);                       // default is 900mA this let's me charge faster
     power.setChargeCurrent(0,1,1,0,0,0);                    // default is 2048mA (011000) = 512mA+1024mA+512mA)
     power.setChargeVoltage(4112);                           // default is 4.112V termination voltage
   }
-  power.enableDPDM();
 }
 
 
