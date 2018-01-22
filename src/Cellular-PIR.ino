@@ -43,7 +43,7 @@
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.43"
+#define SOFTWARERELEASENUMBER "0.44"
 #define PARKCLOSES 18
 #define PARKOPENS 6
 
@@ -143,8 +143,6 @@ void setup()                                                      // Note: Disco
   digitalWrite(donePin,LOW);                                      // Pet the watchdog
   pinMode(hardResetPin,OUTPUT);                                   // For a hard reset active HIGH
 
-  PMICreset();                                                    // Executes commands that set up the PMIC for Solar charging
-
   attachInterrupt(wakeUpPin, watchdogISR, RISING);   // The watchdog timer will signal us and we have to respond
   attachInterrupt(intPin,sensorISR,RISING);   // Will know when the PIR sensor is triggered
 
@@ -184,6 +182,10 @@ void setup()                                                      // Note: Disco
     snprintf(Status,13,"Erasing FRAM");
     ResetFRAM();                                                        // Reset the FRAM to correct the issue
     if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) state = ERROR_STATE;   // Resetting did not fix the issue
+    else {
+      FRAMwrite8(CONTROLREGISTER,0);                                    // Need to reset so not in low power or low battery mode
+      FRAMwrite8(TIMEZONEADDR,-5);                                      // Set the timezone to EST - sorry at least I know what it is
+    }
   }
 
   resetCount = FRAMread8(RESETCOUNT);                                   // Retrive system recount data from FRAM
@@ -207,6 +209,8 @@ void setup()                                                      // Note: Disco
   lowBatteryMode = (0b000000010 & controlRegister);                     // lowBatteryMode
   solarPowerMode = (0b00000100 & controlRegister);                      // solarPowerMode
   verboseMode = (0b00001000 & controlRegister);                         // verboseMode
+
+  PMICreset();                                                          // Executes commands that set up the PMIC for Solar charging - once we know the Solar Mode
 
   if (!digitalRead(userSwitch) && lowPowerMode) {                      // Rescue mode to locally take lowPowerMode so you can connect to device
     lowPowerMode = false;                                               // Press the user switch while resetting the device
