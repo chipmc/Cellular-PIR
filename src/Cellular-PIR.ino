@@ -43,8 +43,8 @@
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.44"
-#define PARKCLOSES 18
+#define SOFTWARERELEASENUMBER "0.46"
+#define PARKCLOSES 23
 #define PARKOPENS 6
 
 
@@ -97,6 +97,7 @@ bool lowBatteryMode;                        // Battery is critical - must not co
 byte controlRegister;                       // Stores the control register values
 bool solarPowerMode = false;                // Changes the PMIC settings
 bool verboseMode = true;                    // Enables more active communications for configutation and setup
+bool catNap = false;
 retained char Signal[17];             // Used to communicate Wireless RSSI and Description
 char Status[17] = "";                 // Used to communciate updates on System Status
 const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
@@ -123,10 +124,8 @@ unsigned long napDelay;                     // Normal amount of time after event
 unsigned long granularity;                  // Triggers less than this amount will be ignored
 int keepSession;                            // The value of the time we will keep a session alive - in seconds
 
-
 // Battery monitor
 int stateOfCharge = 0;                      // stores battery charge level value
-
 
 void setup()                                                      // Note: Disconnected Setup()
 {
@@ -240,7 +239,8 @@ void loop()
       hourlyPersonCountSent = hourlyDurationCountSent = 0;
     }
     if (sensorDetect) recordCount();                                                                    // The ISR had raised the sensor flag
-    if ((millis() >= (lastEvent + timeTillSleep)) && lowPowerMode) state = NAPPING_STATE;               // Too long since last sensor flag - time to nap
+//    if ((millis() >= (lastEvent + timeTillSleep)) && lowPowerMode) state = NAPPING_STATE;               // Too long since last sensor flag - time to nap
+    if (lowPowerMode) state = NAPPING_STATE;
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;                                    // We want to report on the hour but not after bedtime
     if ((Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) state = SLEEPING_STATE;                 // The park is closed, time to sleep
     if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;                                               // The battery is low - sleep
@@ -273,7 +273,7 @@ void loop()
       readyForBed = true;                                       // Set the flag for the night
     }
     int secondsToHour = (60*(60 - Time.minute()));              // Time till the top of the hour
-    System.sleep(SLEEP_MODE_DEEP,secondsToHour);                // Very deep sleep till the next hour - then resets
+    System.sleep(SLEEP_MODE_SOFTPOWEROFF,secondsToHour);        // Very deep sleep till the next hour - then resets
     } break;
 
   case NAPPING_STATE: {
@@ -281,13 +281,17 @@ void loop()
       {
         disconnectFromParticle();                              // If connected, we need to disconned and power down the modem
       }
-      timeTillSleep = napDelay;                                // Set the time we will wait before napping again
-      lastEvent = millis();                                    // Reset millis so we don't wake and then nap again
+      delay(100);
       ledState = false;                                        // Turn out the light
       digitalWrite(blueLED,LOW);                               // Turn off the LED
-      sensorDetect = true;                                     // Woke up so there must have been an event
       int secondsToHour = (60*(60 - Time.minute()));           // Time till the top of the hour
-      System.sleep(intPin, RISING, secondsToHour);             // Sensor will wake us with an interrupt
+      if (catNap) System.sleep(keepSession);
+      else {
+        System.sleep(intPin, RISING, secondsToHour);             // Sensor will wake us with an interrupt
+        sensorDetect = true;
+        lastEvent = millis();
+      }
+      catNap = false;                                          // Puts us back into deeper napping mode
       state = IDLE_STATE;                                      // Back to the IDLE_STATE after a nap
     } break;
 
@@ -365,6 +369,7 @@ void recordCount()                                          // Handles counting 
   if (millis() - lastEvent > keepSession*1000) {            // Check to see if this is a new session or just a keep session event
     t = Time.now();
     lastEvent = millis();                                   // Each time this routine is triggered, it is an event which keeps the session alive
+    catNap = false;                                     // Puts us back into deeper napping mode
     hourlyPersonCount++;                                    // Increment the PersonCount
     hourlyDurationCount++;                                  // Increment this as well since we don't count the last one before napping
     FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
@@ -381,6 +386,7 @@ void recordCount()                                          // Handles counting 
   else if (millis() - lastEvent > granularity*1000) {      // In this case, it is the same person who is loitering in the detection area
     lastEvent = millis();                                  // Each time this routine is triggered, it is an event which keeps the session alive
     hourlyDurationCount++;                                 // Increment the duration counter only
+    catNap = true;                                         // Can't sleep too deeply since we need millis()
     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
     averageHourlyDuration = int((hourlyDurationCount * granularity) / hourlyPersonCount);
     snprintf(data, sizeof(data), "Same visit, hourly average duration: %i (duration / person) (%i / %i)",averageHourlyDuration,hourlyDurationCount,hourlyPersonCount);
@@ -390,11 +396,12 @@ void recordCount()                                          // Handles counting 
     if (lowPowerMode) {
       Particle.publish("Mode","Normal Operations");
       controlRegister = (0b1111110 & controlRegister);     // Will set the lowPowerMode bit to zero
+      FRAMwrite8(CONTROLREGISTER,controlRegister);
       lowPowerMode = false;
+      catNap = false;                                     // Puts us back into deeper napping mode
     }
     state = REPORTING_STATE;                              // If so, connect and send data - this let's us interact with the device if needed
   }
-
 }
 
 void StartStopTest(boolean startTest)  // Since the test can be started from the serial menu or the Simblee - created a function
