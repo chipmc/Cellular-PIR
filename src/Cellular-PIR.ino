@@ -18,35 +18,32 @@
 
 // Easy place to change global numbers
 //These defines let me change the memory map and configuration without hunting through the whole program
-#define VERSIONNUMBER 8             // Increment this number each time the memory map is changed
+#define VERSIONNUMBER 9             // Increment this number each time the memory map is changed
 #define WORDSIZE 8                  // For the Word size the number of bytes in a "word"
 #define PAGESIZE 4096               // Memory size in bytes / word size - 256kb FRAM
 #define HOURLYOFFSET 24             // First word of hourly counts (remember we start counts at 1)
 #define HOURLYCOUNTNUMBER 4064      // used in modulo calculations - sets the # of hours stored - 256k (4096-14-2)
 // First Word - 8 bytes for setting global values
 #define VERSIONADDR 0x0             // Where we store the memory map version number
-#define SENSITIVITYADDR 0x1         // Sensitivity for Accelerometer sensors
-#define GRANULARITYADDR 0x2          // One uint8_t for granularity (stored in seconds)
-#define RESETCOUNT 0x3              // This is where we keep track of how often the Electron was reset
-#define KEEPSESSIONADDR 0x4         // Here we store the percent that we add to granularity to get the Keep Session value
-#define TIMEZONEADDR  0x5           // Store the local time zone data
-        //  OPEN BYTE
+#define SENSITIVITY 0x1             // Sensitivity for Accelerometer sensors
+#define RESETCOUNT 0x2              // This is where we keep track of how often the Electron was reset
+#define KEEPSESSION 0x3         // This is how long we will wait before we start a new session 0-250 seconds
+#define TIMEZONEADDR  0x4           // Store the local time zone data
+#define OPENTIME 0x2                // Hour for opening the park / store / etc - military time (e.g. 6 is 6am)
+#define CLOSETIME 0x6               // Hour for closing of the park / store / etc - military time (e.g 23 is 11pm)
 #define CONTROLREGISTER 0x7         // This is the control register for storing the current state - future use
 //Second and Third words bytes for storing current counts
-#define CURRENTHOURLYCOUNTADDR 0x8  // Current Hourly Count - 16 bits
-#define CURRENTHOURLYDURATIONADDR 0xA   // Current Hourly Duration Count - 16 bits
-#define CURRENTDAILYCOUNTADDR 0xC   // Current Daily Count - 16 bits
+#define CURRENTHOURLYCOUNT 0x8      // Current Hourly Count - 16 bits
+#define CURRENTHOURLYDURATION 0xA   // Current Hourly Duration Count - 16 bits - in seconds
+#define CURRENTDAILYCOUNT 0xC       // Current Daily Count - 16 bits
 #define CURRENTCOUNTSTIME 0xE       // Time of last count - 32 bits
-#define HOURLYPOINTERADDR 0x11      // Two bytes for hourly pointer
+#define HOURLYPOINTER 0x11          // Two bytes for hourly pointer
                                     // Four open bytes here which takes us to the third word
 //These are the hourly and daily offsets that make up the respective words
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.50"
-#define PARKCLOSES 23
-#define PARKOPENS 6
-
+#define SOFTWARERELEASENUMBER "0.51"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
@@ -76,13 +73,14 @@ const int blueLED =       D7;               // This LED is on the Electron itsel
 
 
 // Timing Variables
+Timer timer(90000,hourlyISR,true);          // This is the timer we will use to stay awake for 90 seconds when in low power mode
 unsigned long publishTimeStamp = 0;         // Keep track of when we publish a webhook
 unsigned long webhookWaitTime = 45000;      // How long will we let a webhook go before we give up
 unsigned long resetWaitTimeStamp = 0;       // Starts the reset wait clock
 unsigned long resetWaitTime = 30000;        // Will wait this lonk before resetting.
 bool waiting = false;                       // Keeps track of things that are in flight - enables non-blocking code
 bool readyForBed = false;                   // Keeps track of the things that you do once before sleep
-
+bool stayAwake = false;                     // Flag that keeps Electron awake for 90 seconds after reporting
 
 // Program Variables
 int temperatureF;                           // Global variable so we can monitor via cloud variable
@@ -102,6 +100,8 @@ const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 
 // FRAM and Unix time variables
 time_t t;
+byte openTime;
+byte closeTime;
 byte lastHour = 0;                          // For recording the startup values
 byte lastDate = 0;                          // These values make sure we record events if time has lapsed
 int hourlyDurationSeconds = 0;              // This is where we count the duration seconds which are defined by the value of granularity
@@ -152,14 +152,14 @@ void setup()                                                      // Note: Disco
   Particle.variable("keepSession",keepSession);
   Particle.variable("Signal", Signal);
   Particle.variable("ResetCount", resetCount);
-  Particle.variable("Temperature",temperatureF);
   Particle.variable("Release",releaseNumber);
   Particle.variable("stateOfChg", stateOfCharge);
   Particle.variable("lowPowerMode",lowPowerMode);
+  Particle.variable("OpenTime",openTime);
+  Particle.variable("CloseTime",closeTime);
 
   Particle.function("Reset-FRAM", resetFRAM);
   Particle.function("Reset-Counts",resetCounts);
-  Particle.function("Soft-Reset",resetNow);
   Particle.function("Hard-Reset",hardResetNow);
   Particle.function("KeepSession",setKeepSession);
   Particle.function("Send-Now",sendNow);
@@ -167,6 +167,9 @@ void setup()                                                      // Note: Disco
   Particle.function("Solar-Mode",setSolarMode);
   Particle.function("Verbose-Mode",setVerboseMode);
   Particle.function("Set-Timezone",setTimeZone);
+  Particle.function("Set-OpenTime",setOpenTime);
+  Particle.function("Set-Close",setCloseTime);
+
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
     snprintf(Status,13,"Missing FRAM");                                 // Can't communicate with FRAM - fatal error
@@ -179,6 +182,9 @@ void setup()                                                      // Note: Disco
     else {
       FRAMwrite8(CONTROLREGISTER,0);                                    // Need to reset so not in low power or low battery mode
       FRAMwrite8(TIMEZONEADDR,-5);                                      // Set the timezone to EST - sorry at least I know what it is
+      FRAMwrite8(OPENTIME,6);                                           // These set the defaults if the FRAM is erased
+      FRAMwrite8(CLOSETIME,23);
+      FRAMwrite8(KEEPSESSION,2);
     }
   }
 
@@ -189,9 +195,10 @@ void setup()                                                      // Note: Disco
     FRAMwrite8(RESETCOUNT,static_cast<uint8_t>(resetCount));            // If so, store incremented number - watchdog must have done This
   }
 
-  // Here we load the values for granularity and keepSession from FRAM
-  keepSession = FRAMread8(KEEPSESSIONADDR);                   // keepSession - The time to keep a session alive - in seconds
-
+  // Here we load the values from FRAM
+  keepSession = FRAMread8(KEEPSESSION);                             // keepSession - The time to keep a session alive - in seconds
+  openTime = FRAMread8(OPENTIME);
+  closeTime = FRAMread8(CLOSETIME);
   int8_t tempTimeZoneOffset = FRAMread8(TIMEZONEADDR);                  // Load Time zone data from FRAM
   Time.zone((float)tempTimeZoneOffset);
 
@@ -203,13 +210,7 @@ void setup()                                                      // Note: Disco
 
   PMICreset();                                                          // Executes commands that set up the PMIC for Solar charging - once we know the Solar Mode
 
-  if (!digitalRead(userSwitch) && lowPowerMode) {                      // Rescue mode to locally take lowPowerMode so you can connect to device
-    lowPowerMode = false;                                               // Press the user switch while resetting the device
-    controlRegister = (0b1111110 & controlRegister);                    // Turn off Low power mode
-    FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
-  }
-
-  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) connectToParticle();  // If not lowpower or sleeping, we can connect
+  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= openTime || Time.hour() < closeTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
 
   takeMeasurements();
   StartStopTest(1);                                                     // Default action is for the test to be running
@@ -223,15 +224,15 @@ void loop()
   case IDLE_STATE:
     if(hourlyPersonCountSent) {   // Cleared here as there could be counts coming in while "in Flight"
       hourlyPersonCount -= hourlyPersonCountSent;    // Confirmed that count was recevied - clearing
-      FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
+      FRAMwrite16(CURRENTHOURLYCOUNT, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
       hourlyDurationSeconds -= hourlyDurationSecondsSent;    // Confirmed that count was recevied - clearing
-      FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Duration Count to memory
+      FRAMwrite16(CURRENTHOURLYDURATION, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Duration Count to memory
       hourlyPersonCountSent = hourlyDurationSecondsSent = 0;
     }
     if (sensorDetect) recordCount();                                                                    // The ISR had raised the sensor flag
-    if (lowPowerMode) state = NAPPING_STATE;
+    if (lowPowerMode && !stayAwake) state = NAPPING_STATE;
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;                                    // We want to report on the hour but not after bedtime
-    if ((Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) state = SLEEPING_STATE;                 // The park is closed, time to sleep
+    if ((Time.hour() >= openTime || Time.hour() < closeTime)) state = SLEEPING_STATE;                 // The park is closed, time to sleep
     if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;                                               // The battery is low - sleep
     break;
 
@@ -247,13 +248,13 @@ void loop()
       }
       detachInterrupt(intPin);                                  // Done sensing for the day
       dailyPersonCount = 0;                                     // All the counts have been reported so time to zero everything
-      FRAMwrite16(CURRENTDAILYCOUNTADDR, 0);                    // Reset the counts in FRAM as well
+      FRAMwrite16(CURRENTDAILYCOUNT, 0);                    // Reset the counts in FRAM as well
       resetCount = 0;
       FRAMwrite8(RESETCOUNT,resetCount);
       hourlyPersonCount = 0;
-      FRAMwrite16(CURRENTHOURLYCOUNTADDR, 0);
+      FRAMwrite16(CURRENTHOURLYCOUNT, 0);
       hourlyDurationSeconds = 0;
-      FRAMwrite16(CURRENTHOURLYDURATIONADDR, 0);
+      FRAMwrite16(CURRENTHOURLYDURATION, 0);
       ledState = false;
       digitalWrite(blueLED,LOW);                                // Turn off the LED
       digitalWrite(tmp36Shutdwn, LOW);                          // Turns off the temp sensor
@@ -320,6 +321,8 @@ void loop()
     if (!dataInFlight)          // Response received
     {
       state = IDLE_STATE;
+      stayAwake = true;
+      timer.reset();              // Set the stayAwake flag and start the timer
       if (verboseMode) Particle.publish("State","Idle");
     }
     else if (millis() >= (publishTimeStamp + webhookWaitTime)) {
@@ -350,20 +353,20 @@ void recordCount()                                          // Handles counting 
 {
   char data[256];                                           // Store the date in this character array - not global
   sensorDetect = false;                                     // Reset the flag
-  if (sessionStart = 0) sessionStart = currentEvent;
-  int timeLapsed = difftime(currentEvent,lastEvent);
+  if (sessionStart = 0) sessionStart = currentEvent;        // This means we are starting a new session
+  int timeLapsed = difftime(currentEvent,lastEvent);        // This is the time between this event and last
   snprintf(data, sizeof(data), "Elapsed time in sec: %i",timeLapsed);
   if (verboseMode) Particle.publish("Count",data);
 
   if (timeLapsed > keepSession) {            // Check to see if this is a new session or just a keep session event
     int sessionLength = difftime(currentEvent,sessionStart);
-    if (sessionLength = 0) sessionLength = keepSession;
+    if (sessionLength = 0) sessionLength = keepSession;     // This is the minimum length - 0 means there was no lastEvent in this session
     hourlyPersonCount++;                                    // Increment the PersonCount
-    FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
+    FRAMwrite16(CURRENTHOURLYCOUNT, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
     hourlyDurationSeconds += sessionLength;               // Increment the duration counter as well
-    FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Count to memory
+    FRAMwrite16(CURRENTHOURLYDURATION, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Count to memory
     dailyPersonCount++;                                     // Increment the PersonCount
-    FRAMwrite16(CURRENTDAILYCOUNTADDR, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
+    FRAMwrite16(CURRENTDAILYCOUNT, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
     FRAMwrite32(CURRENTCOUNTSTIME, sessionStart);           // Write to FRAM - this is so we know when the last counts were saved
     ledState = !ledState;                                   // toggle the status of the LEDPIN:
     digitalWrite(blueLED, ledState);                        // update the LED pin itself
@@ -374,7 +377,7 @@ void recordCount()                                          // Handles counting 
   }
   else {      // In this case, it is the same person who is loitering in the detection area
     averageHourlyDuration = int(hourlyDurationSeconds / hourlyPersonCount);
-    snprintf(data, sizeof(data), "Same visit, hourly average duration: %i (duration / person) (%i / %i)",averageHourlyDuration,hourlyDurationSeconds,hourlyPersonCount);
+    snprintf(data, sizeof(data), "Same visit, hourly average duration: %i and %i sessions",averageHourlyDuration,hourlyPersonCount);
     if (verboseMode) Particle.publish("Count",data);
     lastEvent = currentEvent;
   }
@@ -386,7 +389,6 @@ void recordCount()                                          // Handles counting 
       lowPowerMode = false;
       catNap = false;                                     // Puts us back into deeper napping mode
     }
-    state = REPORTING_STATE;                              // If so, connect and send data - this let's us interact with the device if needed
   }
 }
 
@@ -399,16 +401,16 @@ void StartStopTest(boolean startTest)  // Since the test can be started from the
      time_t unixTime = FRAMread32(CURRENTCOUNTSTIME);
      lastHour = Time.hour(unixTime);
      lastDate = Time.day(unixTime);
-     dailyPersonCount = FRAMread16(CURRENTDAILYCOUNTADDR);  // Load Daily Count from memory
-     hourlyPersonCount = FRAMread16(CURRENTHOURLYCOUNTADDR);  // Load Hourly Count from memory
-     hourlyDurationSeconds = FRAMread16(CURRENTHOURLYDURATIONADDR);  // Load Hourly Duration Count from memory
+     dailyPersonCount = FRAMread16(CURRENTDAILYCOUNT);  // Load Daily Count from memory
+     hourlyPersonCount = FRAMread16(CURRENTHOURLYCOUNT);  // Load Hourly Count from memory
+     hourlyDurationSeconds = FRAMread16(CURRENTHOURLYDURATION);  // Load Hourly Duration Count from memory
      if (currentHourlyPeriod != lastHour) LogHourlyEvent();
  }
  else {
      t = Time.now();
-     FRAMwrite16(CURRENTDAILYCOUNTADDR, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
-     FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Duration Count to memory
+     FRAMwrite16(CURRENTDAILYCOUNT, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
+     FRAMwrite16(CURRENTHOURLYCOUNT, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
+     FRAMwrite16(CURRENTHOURLYDURATION, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Duration Count to memory
      FRAMwrite32(CURRENTCOUNTSTIME, t);   // Write to FRAM - this is so we know when the last counts were saved
      hourlyPersonCount = 0;        // Reset Person Count
      dailyPersonCount = 0;         // Reset Person Count
@@ -418,13 +420,13 @@ void StartStopTest(boolean startTest)  // Since the test can be started from the
 void LogHourlyEvent() // Log Hourly Event()
 {
   time_t LogTime = FRAMread32(CURRENTCOUNTSTIME);     // This is the last event recorded - this sets the hourly period
-  unsigned int pointer = (HOURLYOFFSET + FRAMread16(HOURLYPOINTERADDR))*WORDSIZE;  // get the pointer from memory and add the offset
+  unsigned int pointer = (HOURLYOFFSET + FRAMread16(HOURLYPOINTER))*WORDSIZE;  // get the pointer from memory and add the offset
   LogTime -= (60*Time.minute(LogTime) + Time.second(LogTime)); // So, we need to subtract the minutes and seconds needed to take to the top of the hour
   FRAMwrite32(pointer, LogTime);   // Write to FRAM - this is the end of the period
   FRAMwrite16(pointer+HOURLYCOUNTOFFSET,static_cast<uint16_t>(hourlyPersonCount));
   FRAMwrite8(pointer+HOURLYBATTOFFSET,stateOfCharge);
-  unsigned int newHourlyPointerAddr = (FRAMread16(HOURLYPOINTERADDR)+1) % HOURLYCOUNTNUMBER;  // This is where we "wrap" the count to stay in our memory space
-  FRAMwrite16(HOURLYPOINTERADDR,newHourlyPointerAddr);
+  unsigned int newHOURLYPOINTER = (FRAMread16(HOURLYPOINTER)+1) % HOURLYCOUNTNUMBER;  // This is where we "wrap" the count to stay in our memory space
+  FRAMwrite16(HOURLYPOINTER,newHOURLYPOINTER);
 }
 
 void sendEvent()
@@ -476,6 +478,11 @@ void sensorISR()
 {
   sensorDetect = true;                                    // sets the sensor flag for the main loop
   currentEvent = Time.now();                                 // Time in time_t of the interrupt
+}
+
+void hourlyISR()
+{
+  stayAwake = false;                                       // After the timer fires, will turn off the stayAwake flag
 }
 
 void watchdogISR()
@@ -556,9 +563,9 @@ int resetCounts(String command)   // Resets the current hourly and daily counts
 {
   if (command == "1")
   {
-    FRAMwrite16(CURRENTDAILYCOUNTADDR, 0);   // Reset Daily Count in memory
-    FRAMwrite16(CURRENTHOURLYCOUNTADDR, 0);  // Reset Hourly Count in memory
-    FRAMwrite16(CURRENTHOURLYDURATIONADDR, 0);  // Reset Hourly Duration Count in memory
+    FRAMwrite16(CURRENTDAILYCOUNT, 0);   // Reset Daily Count in memory
+    FRAMwrite16(CURRENTHOURLYCOUNT, 0);  // Reset Hourly Count in memory
+    FRAMwrite16(CURRENTHOURLYDURATION, 0);  // Reset Hourly Duration Count in memory
     FRAMwrite8(RESETCOUNT,0);          // If so, store incremented number - watchdog must have done This
     resetCount = 0;
     hourlyPersonCount = hourlyDurationSeconds = 0;                    // Reset count variables
@@ -566,16 +573,6 @@ int resetCounts(String command)   // Resets the current hourly and daily counts
     hourlyPersonCountSent = hourlyDurationSecondsSent = 0;                // In the off-chance there is data in flight
     dataInFlight = false;
     return 1;
-  }
-  else return 0;
-}
-
-int resetNow(String command)   // Will reset the Electron
-{
-  if (command == "1")
-  {
-    System.reset();                           // This will reset the Electron Only
-    return 1;                                 // Unfortunately, this will never be sent
   }
   else return 0;
 }
@@ -591,13 +588,13 @@ int hardResetNow(String command)   // Will perform a hard reset on the Electron
 }
 
 
-int setKeepSession(String command)  // Will accept a new keep session value in the form "xx" where xxx is the amount in % that keep alive is greater than granularity
+int setKeepSession(String command)  // This is the amount of time in seconds we will wait before starting a new session
 {
   char * pEND;
   char data[256];
   byte tempKeepSession = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
   if ((tempKeepSession < 0) | (tempKeepSession > 250)) return 0;   // Make sure it falls in a valid range or send a "fail" result
-  FRAMwrite8(KEEPSESSIONADDR,tempKeepSession);
+  FRAMwrite8(KEEPSESSION,tempKeepSession);
   keepSession = tempKeepSession;                   // keepSession - The time to keep a session alive - in seconds
   snprintf(data, sizeof(data), "Values are: keepSession: %i",keepSession);
   if (verboseMode) Particle.publish("Variables",data);
@@ -678,6 +675,33 @@ int setTimeZone(String command)
   Particle.publish("Time",Time.timeStr(t));
   return 1;
 }
+
+int setOpenTime(String command)
+{
+  char * pEND;
+  char data[256];
+  int8_t tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  if ((tempTime < 0) | (tempTime > 23)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  openTime = tempTime;
+  FRAMwrite8(OPENTIME,openTime);                             // Store the new value in FRAMwrite8
+  snprintf(data, sizeof(data), "Open time set to %i",openTime);
+  Particle.publish("Time",data);
+  return 1;
+}
+
+int setCloseTime(String command)
+{
+  char * pEND;
+  char data[256];
+  int8_t tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  if ((tempTime < 0) | (tempTime > 24)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  closeTime = tempTime;
+  FRAMwrite8(CLOSETIME,closeTime);                             // Store the new value in FRAMwrite8
+  snprintf(data, sizeof(data), "Closing time set to %i",closeTime);
+  Particle.publish("Time",data);
+  return 1;
+}
+
 
 int setLowPowerMode(String command)                                   // This is where we can put the device into low power mode if needed
 {
