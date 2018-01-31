@@ -43,7 +43,7 @@
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.46"
+#define SOFTWARERELEASENUMBER "0.50"
 #define PARKCLOSES 23
 #define PARKOPENS 6
 
@@ -80,11 +80,9 @@ unsigned long publishTimeStamp = 0;         // Keep track of when we publish a w
 unsigned long webhookWaitTime = 45000;      // How long will we let a webhook go before we give up
 unsigned long resetWaitTimeStamp = 0;       // Starts the reset wait clock
 unsigned long resetWaitTime = 30000;        // Will wait this lonk before resetting.
-unsigned long sleepDelay = 90000;           // Longer delay before sleep when booting up or on the hour - gives time to flash
-unsigned long timeTillSleep = 0;            // This will either be short or long depending on nap or sleep
-
 bool waiting = false;                       // Keeps track of things that are in flight - enables non-blocking code
 bool readyForBed = false;                   // Keeps track of the things that you do once before sleep
+
 
 // Program Variables
 int temperatureF;                           // Global variable so we can monitor via cloud variable
@@ -106,8 +104,8 @@ const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 time_t t;
 byte lastHour = 0;                          // For recording the startup values
 byte lastDate = 0;                          // These values make sure we record events if time has lapsed
-int hourlyDurationCount = 0;                // This is where we count the duration "periods" which are defined by the value of granularity
-int hourlyDurationCountSent = 0;            // Keep track of counts in flight
+int hourlyDurationSeconds = 0;              // This is where we count the duration seconds which are defined by the value of granularity
+int hourlyDurationSecondsSent = 0;            // Keep track of counts in flight
 int hourlyPersonCount = 0;                  // hourly counter
 int hourlyPersonCountSent = 0;              // Person count in flight to Ubidots
 int dailyPersonCount = 0;                   // daily counter
@@ -118,10 +116,9 @@ byte currentDailyPeriod;                    // We will keep daily counts as well
 
 // PIR Sensor variables
 volatile bool sensorDetect = false;         // This is the flag that an interrupt is triggered
-volatile unsigned long lastEvent = 0;       // Keeps track of the last time there was an event
-float keepSessionFactor;                    // This is the amount of time that we will wait before declaring a new session (expressed as a factor of granularity)
-unsigned long napDelay;                     // Normal amount of time after event before taking a nap - it is defined as 10% more than the granularity * keepSessionFactor
-unsigned long granularity;                  // Triggers less than this amount will be ignored
+volatile time_t currentEvent = 0;           // Time for the current sensor event
+time_t lastEvent = 0;                        // When was the last sensor event
+time_t sessionStart = 0;                    // When did the current session session start
 int keepSession;                            // The value of the time we will keep a session alive - in seconds
 
 // Battery monitor
@@ -152,7 +149,6 @@ void setup()                                                      // Note: Disco
 
   Particle.variable("HourlyCount", hourlyPersonCount);                // Define my Particle variables
   Particle.variable("DailyCount", dailyPersonCount);                  // Note: Don't have to be connected for any of this!!!
-  Particle.variable("granularity", granularity);
   Particle.variable("keepSession",keepSession);
   Particle.variable("Signal", Signal);
   Particle.variable("ResetCount", resetCount);
@@ -165,7 +161,6 @@ void setup()                                                      // Note: Disco
   Particle.function("Reset-Counts",resetCounts);
   Particle.function("Soft-Reset",resetNow);
   Particle.function("Hard-Reset",hardResetNow);
-  Particle.function("Granularity",setGranularity);
   Particle.function("KeepSession",setKeepSession);
   Particle.function("Send-Now",sendNow);
   Particle.function("LowPowerMode",setLowPowerMode);
@@ -195,10 +190,7 @@ void setup()                                                      // Note: Disco
   }
 
   // Here we load the values for granularity and keepSession from FRAM
-  granularity = FRAMread8(GRANULARITYADDR);                                // Load granularity value from FRAM - seconds
-  keepSessionFactor = 1 + ((float)FRAMread8(KEEPSESSIONADDR)/100.0);              // Load the value (in percent) that will scale granularity
-  keepSession = int(granularity * keepSessionFactor);                   // keepSession - The time to keep a session alive - in seconds
-  napDelay = int(granularity * (keepSessionFactor+0.1));                // NapDelay is 10% longer than the keepSession value - in seconds
+  keepSession = FRAMread8(KEEPSESSIONADDR);                   // keepSession - The time to keep a session alive - in seconds
 
   int8_t tempTimeZoneOffset = FRAMread8(TIMEZONEADDR);                  // Load Time zone data from FRAM
   Time.zone((float)tempTimeZoneOffset);
@@ -221,8 +213,6 @@ void setup()                                                      // Note: Disco
 
   takeMeasurements();
   StartStopTest(1);                                                     // Default action is for the test to be running
-  timeTillSleep = sleepDelay;                                           // Set initial delay for 60 seconds
-  lastEvent = millis();
 
   if (state != ERROR_STATE) state = IDLE_STATE;                         // IDLE unless error from above code
 }
@@ -234,12 +224,11 @@ void loop()
     if(hourlyPersonCountSent) {   // Cleared here as there could be counts coming in while "in Flight"
       hourlyPersonCount -= hourlyPersonCountSent;    // Confirmed that count was recevied - clearing
       FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-      hourlyDurationCount -= hourlyDurationCountSent;    // Confirmed that count was recevied - clearing
-      FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Duration Count to memory
-      hourlyPersonCountSent = hourlyDurationCountSent = 0;
+      hourlyDurationSeconds -= hourlyDurationSecondsSent;    // Confirmed that count was recevied - clearing
+      FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Duration Count to memory
+      hourlyPersonCountSent = hourlyDurationSecondsSent = 0;
     }
     if (sensorDetect) recordCount();                                                                    // The ISR had raised the sensor flag
-//    if ((millis() >= (lastEvent + timeTillSleep)) && lowPowerMode) state = NAPPING_STATE;               // Too long since last sensor flag - time to nap
     if (lowPowerMode) state = NAPPING_STATE;
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;                                    // We want to report on the hour but not after bedtime
     if ((Time.hour() >= PARKCLOSES || Time.hour() < PARKOPENS)) state = SLEEPING_STATE;                 // The park is closed, time to sleep
@@ -263,7 +252,7 @@ void loop()
       FRAMwrite8(RESETCOUNT,resetCount);
       hourlyPersonCount = 0;
       FRAMwrite16(CURRENTHOURLYCOUNTADDR, 0);
-      hourlyDurationCount = 0;
+      hourlyDurationSeconds = 0;
       FRAMwrite16(CURRENTHOURLYDURATIONADDR, 0);
       ledState = false;
       digitalWrite(blueLED,LOW);                                // Turn off the LED
@@ -284,14 +273,10 @@ void loop()
       delay(100);
       ledState = false;                                        // Turn out the light
       digitalWrite(blueLED,LOW);                               // Turn off the LED
+
       int secondsToHour = (60*(60 - Time.minute()));           // Time till the top of the hour
-      if (catNap) System.sleep(keepSession);
-      else {
-        System.sleep(intPin, RISING, secondsToHour);             // Sensor will wake us with an interrupt
-        sensorDetect = true;
-        lastEvent = millis();
-      }
-      catNap = false;                                          // Puts us back into deeper napping mode
+      System.sleep(intPin, RISING, secondsToHour);        // Sensor will wake us with an interrupt
+
       state = IDLE_STATE;                                      // Back to the IDLE_STATE after a nap
     } break;
 
@@ -310,7 +295,6 @@ void loop()
     } break;
 
   case REPORTING_STATE: {
-    timeTillSleep = sleepDelay;                              // Sets the sleep delay to give time to flash if needed
     if (!Particle.connected()) {
       if (!connectToParticle()) {
         state = ERROR_STATE;
@@ -333,7 +317,7 @@ void loop()
     } break;
 
   case RESP_WAIT_STATE:
-    if (!dataInFlight)                                  // Response received
+    if (!dataInFlight)          // Response received
     {
       state = IDLE_STATE;
       if (verboseMode) Particle.publish("State","Idle");
@@ -366,31 +350,33 @@ void recordCount()                                          // Handles counting 
 {
   char data[256];                                           // Store the date in this character array - not global
   sensorDetect = false;                                     // Reset the flag
-  if (millis() - lastEvent > keepSession*1000) {            // Check to see if this is a new session or just a keep session event
-    t = Time.now();
-    lastEvent = millis();                                   // Each time this routine is triggered, it is an event which keeps the session alive
-    catNap = false;                                     // Puts us back into deeper napping mode
+  if (sessionStart = 0) sessionStart = currentEvent;
+  int timeLapsed = difftime(currentEvent,lastEvent);
+  snprintf(data, sizeof(data), "Elapsed time in sec: %i",timeLapsed);
+  if (verboseMode) Particle.publish("Count",data);
+
+  if (timeLapsed > keepSession) {            // Check to see if this is a new session or just a keep session event
+    int sessionLength = difftime(currentEvent,sessionStart);
+    if (sessionLength = 0) sessionLength = keepSession;
     hourlyPersonCount++;                                    // Increment the PersonCount
-    hourlyDurationCount++;                                  // Increment this as well since we don't count the last one before napping
     FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-    hourlyDurationCount++;                                  // Increment the duration counter as well
-    FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
+    hourlyDurationSeconds += sessionLength;               // Increment the duration counter as well
+    FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Count to memory
     dailyPersonCount++;                                     // Increment the PersonCount
     FRAMwrite16(CURRENTDAILYCOUNTADDR, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
-    FRAMwrite32(CURRENTCOUNTSTIME, t);                      // Write to FRAM - this is so we know when the last counts were saved
+    FRAMwrite32(CURRENTCOUNTSTIME, sessionStart);           // Write to FRAM - this is so we know when the last counts were saved
     ledState = !ledState;                                   // toggle the status of the LEDPIN:
     digitalWrite(blueLED, ledState);                        // update the LED pin itself
-    snprintf(data, sizeof(data), "New visit, hourlry count: %i",hourlyPersonCount);
+    snprintf(data, sizeof(data), "New visit, hourlry count: %i with a duration of %i",hourlyPersonCount,sessionLength);
     if (verboseMode) Particle.publish("Count",data);
+    lastEvent = currentEvent;
+    sessionStart = 0;
   }
-  else if (millis() - lastEvent > granularity*1000) {      // In this case, it is the same person who is loitering in the detection area
-    lastEvent = millis();                                  // Each time this routine is triggered, it is an event which keeps the session alive
-    hourlyDurationCount++;                                 // Increment the duration counter only
-    catNap = true;                                         // Can't sleep too deeply since we need millis()
-    FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Count to memory
-    averageHourlyDuration = int((hourlyDurationCount * granularity) / hourlyPersonCount);
-    snprintf(data, sizeof(data), "Same visit, hourly average duration: %i (duration / person) (%i / %i)",averageHourlyDuration,hourlyDurationCount,hourlyPersonCount);
+  else {      // In this case, it is the same person who is loitering in the detection area
+    averageHourlyDuration = int(hourlyDurationSeconds / hourlyPersonCount);
+    snprintf(data, sizeof(data), "Same visit, hourly average duration: %i (duration / person) (%i / %i)",averageHourlyDuration,hourlyDurationSeconds,hourlyPersonCount);
     if (verboseMode) Particle.publish("Count",data);
+    lastEvent = currentEvent;
   }
   if (!digitalRead(userSwitch)) {                         // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
     if (lowPowerMode) {
@@ -415,14 +401,14 @@ void StartStopTest(boolean startTest)  // Since the test can be started from the
      lastDate = Time.day(unixTime);
      dailyPersonCount = FRAMread16(CURRENTDAILYCOUNTADDR);  // Load Daily Count from memory
      hourlyPersonCount = FRAMread16(CURRENTHOURLYCOUNTADDR);  // Load Hourly Count from memory
-     hourlyDurationCount = FRAMread16(CURRENTHOURLYDURATIONADDR);  // Load Hourly Duration Count from memory
+     hourlyDurationSeconds = FRAMread16(CURRENTHOURLYDURATIONADDR);  // Load Hourly Duration Count from memory
      if (currentHourlyPeriod != lastHour) LogHourlyEvent();
  }
  else {
      t = Time.now();
      FRAMwrite16(CURRENTDAILYCOUNTADDR, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
      FRAMwrite16(CURRENTHOURLYCOUNTADDR, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationCount));  // Load Hourly Duration Count to memory
+     FRAMwrite16(CURRENTHOURLYDURATIONADDR, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Duration Count to memory
      FRAMwrite32(CURRENTCOUNTSTIME, t);   // Write to FRAM - this is so we know when the last counts were saved
      hourlyPersonCount = 0;        // Reset Person Count
      dailyPersonCount = 0;         // Reset Person Count
@@ -447,7 +433,7 @@ void sendEvent()
   snprintf(data, sizeof(data), "{\"hourly\":%i, \"avgduration\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i}",hourlyPersonCount, averageHourlyDuration, dailyPersonCount, stateOfCharge, temperatureF,resetCount);
   Particle.publish("Occupancy_Hook", data, PRIVATE);
   hourlyPersonCountSent = hourlyPersonCount; // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
-  hourlyDurationCountSent = hourlyDurationCount;
+  hourlyDurationSecondsSent = hourlyDurationSeconds;
   currentHourlyPeriod = Time.hour();  // Change the time period
   dataInFlight = true; // set the data inflight flag
 }
@@ -489,6 +475,7 @@ int getTemperature()
 void sensorISR()
 {
   sensorDetect = true;                                    // sets the sensor flag for the main loop
+  currentEvent = Time.now();                                 // Time in time_t of the interrupt
 }
 
 void watchdogISR()
@@ -574,9 +561,9 @@ int resetCounts(String command)   // Resets the current hourly and daily counts
     FRAMwrite16(CURRENTHOURLYDURATIONADDR, 0);  // Reset Hourly Duration Count in memory
     FRAMwrite8(RESETCOUNT,0);          // If so, store incremented number - watchdog must have done This
     resetCount = 0;
-    hourlyPersonCount = hourlyDurationCount = 0;                    // Reset count variables
+    hourlyPersonCount = hourlyDurationSeconds = 0;                    // Reset count variables
     dailyPersonCount = 0;
-    hourlyPersonCountSent = hourlyDurationCountSent = 0;                // In the off-chance there is data in flight
+    hourlyPersonCountSent = hourlyDurationSecondsSent = 0;                // In the off-chance there is data in flight
     dataInFlight = false;
     return 1;
   }
@@ -603,32 +590,16 @@ int hardResetNow(String command)   // Will perform a hard reset on the Electron
   else return 0;
 }
 
-int setGranularity(String command)  // Will accept a new granularity value in the form "xxx" where xxx is an integer for delay in seconds
-{
-  char * pEND;
-  char data[256];
-  byte tempGranularity = strtol(command,&pEND,10);                      // Looks for the first integer and interprets it
-  if ((tempGranularity < 0) | (tempGranularity > 255)) return 0;        // Make sure it falls in a valid range or send a "fail" result
-  granularity = tempGranularity;                                        // Valid value
-  FRAMwrite8(GRANULARITYADDR, granularity);                             // Remember we store granularity in Sec
-  keepSession = int(granularity * keepSessionFactor);                   // keepSession - The time to keep a session alive - in seconds
-  napDelay = int(granularity * (keepSessionFactor + 0.1));              // These two are related
-  snprintf(data, sizeof(data), "Values are: granularity: %i, keepSessionFactor: %.1f, keepSession: %i, napDelay: %i",granularity,keepSessionFactor,keepSession,napDelay);
-  if (verboseMode) Particle.publish("Variables",data);
-  return 1;
-}
 
 int setKeepSession(String command)  // Will accept a new keep session value in the form "xx" where xxx is the amount in % that keep alive is greater than granularity
 {
   char * pEND;
   char data[256];
-  byte tempKeepSessionPercent = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
-  if ((tempKeepSessionPercent < 0) | (tempKeepSessionPercent > 200)) return 0;   // Make sure it falls in a valid range or send a "fail" result
-  FRAMwrite8(KEEPSESSIONADDR,tempKeepSessionPercent);
-  keepSessionFactor = 1.0 + ((float)tempKeepSessionPercent/100.0);
-  keepSession = int(granularity * keepSessionFactor);                   // keepSession - The time to keep a session alive - in seconds
-  napDelay = int(granularity * (keepSessionFactor+0.1));                // NapDelay is 10% longer than the keepSession value - in seconds
-  snprintf(data, sizeof(data), "Values are: granularity: %i, keepSessionFactor: %.2f, keepSession: %i, napDelay: %i",granularity,keepSessionFactor,keepSession,napDelay);
+  byte tempKeepSession = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  if ((tempKeepSession < 0) | (tempKeepSession > 250)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  FRAMwrite8(KEEPSESSIONADDR,tempKeepSession);
+  keepSession = tempKeepSession;                   // keepSession - The time to keep a session alive - in seconds
+  snprintf(data, sizeof(data), "Values are: keepSession: %i",keepSession);
   if (verboseMode) Particle.publish("Variables",data);
   return 1;
 }
