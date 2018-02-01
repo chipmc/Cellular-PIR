@@ -43,7 +43,7 @@
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.51"
+#define SOFTWARERELEASENUMBER "0.52"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
@@ -71,7 +71,6 @@ const int userSwitch =    D5;               // User switch with a pull-up resist
 const int donePin =       D6;               // Pin the Electron uses to "pet" the watchdog
 const int blueLED =       D7;               // This LED is on the Electron itself
 
-
 // Timing Variables
 Timer timer(90000,hourlyISR,true);          // This is the timer we will use to stay awake for 90 seconds when in low power mode
 unsigned long publishTimeStamp = 0;         // Keep track of when we publish a webhook
@@ -93,7 +92,6 @@ bool lowBatteryMode;                        // Battery is critical - must not co
 byte controlRegister;                       // Stores the control register values
 bool solarPowerMode = false;                // Changes the PMIC settings
 bool verboseMode = true;                    // Enables more active communications for configutation and setup
-bool catNap = false;
 retained char Signal[17];             // Used to communicate Wireless RSSI and Description
 char Status[17] = "";                 // Used to communciate updates on System Status
 const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
@@ -210,7 +208,7 @@ void setup()                                                      // Note: Disco
 
   PMICreset();                                                          // Executes commands that set up the PMIC for Solar charging - once we know the Solar Mode
 
-  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= openTime || Time.hour() < closeTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
+  if (!lowPowerMode && !lowBatteryMode && Time.hour() >= openTime && Time.hour() < closeTime) connectToParticle();  // If not lowpower or sleeping, we can connect
 
   takeMeasurements();
   StartStopTest(1);                                                     // Default action is for the test to be running
@@ -232,7 +230,7 @@ void loop()
     if (sensorDetect) recordCount();                                                                    // The ISR had raised the sensor flag
     if (lowPowerMode && !stayAwake) state = NAPPING_STATE;
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;                                    // We want to report on the hour but not after bedtime
-    if ((Time.hour() >= openTime || Time.hour() < closeTime)) state = SLEEPING_STATE;                 // The park is closed, time to sleep
+    if ((Time.hour() >= closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;                 // The park is closed, time to sleep
     if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;                                               // The battery is low - sleep
     break;
 
@@ -353,14 +351,12 @@ void recordCount()                                          // Handles counting 
 {
   char data[256];                                           // Store the date in this character array - not global
   sensorDetect = false;                                     // Reset the flag
-  if (sessionStart = 0) sessionStart = currentEvent;        // This means we are starting a new session
   int timeLapsed = difftime(currentEvent,lastEvent);        // This is the time between this event and last
-  snprintf(data, sizeof(data), "Elapsed time in sec: %i",timeLapsed);
+  snprintf(data, sizeof(data), "Elapsed time since last event in sec: %i",timeLapsed);
   if (verboseMode) Particle.publish("Count",data);
+  int sessionLength = difftime(lastEvent,sessionStart)+keepSession;
 
   if (timeLapsed > keepSession) {            // Check to see if this is a new session or just a keep session event
-    int sessionLength = difftime(currentEvent,sessionStart);
-    if (sessionLength = 0) sessionLength = keepSession;     // This is the minimum length - 0 means there was no lastEvent in this session
     hourlyPersonCount++;                                    // Increment the PersonCount
     FRAMwrite16(CURRENTHOURLYCOUNT, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
     hourlyDurationSeconds += sessionLength;               // Increment the duration counter as well
@@ -373,11 +369,10 @@ void recordCount()                                          // Handles counting 
     snprintf(data, sizeof(data), "New visit, hourlry count: %i with a duration of %i",hourlyPersonCount,sessionLength);
     if (verboseMode) Particle.publish("Count",data);
     lastEvent = currentEvent;
-    sessionStart = 0;
+    sessionStart = currentEvent;
   }
   else {      // In this case, it is the same person who is loitering in the detection area
-    averageHourlyDuration = int(hourlyDurationSeconds / hourlyPersonCount);
-    snprintf(data, sizeof(data), "Same visit, hourly average duration: %i and %i sessions",averageHourlyDuration,hourlyPersonCount);
+    snprintf(data, sizeof(data), "Same visit, duration of: %i and %i sessions",sessionLength,hourlyPersonCount);
     if (verboseMode) Particle.publish("Count",data);
     lastEvent = currentEvent;
   }
@@ -387,7 +382,6 @@ void recordCount()                                          // Handles counting 
       controlRegister = (0b1111110 & controlRegister);     // Will set the lowPowerMode bit to zero
       FRAMwrite8(CONTROLREGISTER,controlRegister);
       lowPowerMode = false;
-      catNap = false;                                     // Puts us back into deeper napping mode
     }
   }
 }
