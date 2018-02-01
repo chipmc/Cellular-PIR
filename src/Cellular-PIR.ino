@@ -28,7 +28,7 @@
 #define SENSITIVITY 0x1             // Sensitivity for Accelerometer sensors
 #define RESETCOUNT 0x2              // This is where we keep track of how often the Electron was reset
 #define KEEPSESSION 0x3         // This is how long we will wait before we start a new session 0-250 seconds
-#define TIMEZONEADDR  0x4           // Store the local time zone data
+#define TIMEZONE  0x4           // Store the local time zone data
 #define OPENTIME 0x2                // Hour for opening the park / store / etc - military time (e.g. 6 is 6am)
 #define CLOSETIME 0x6               // Hour for closing of the park / store / etc - military time (e.g 23 is 11pm)
 #define CONTROLREGISTER 0x7         // This is the control register for storing the current state - future use
@@ -43,7 +43,7 @@
 #define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
 #define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.52"
+#define SOFTWARERELEASENUMBER "0.53"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
@@ -179,7 +179,7 @@ void setup()                                                      // Note: Disco
     if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) state = ERROR_STATE;   // Resetting did not fix the issue
     else {
       FRAMwrite8(CONTROLREGISTER,0);                                    // Need to reset so not in low power or low battery mode
-      FRAMwrite8(TIMEZONEADDR,-5);                                      // Set the timezone to EST - sorry at least I know what it is
+      FRAMwrite8(TIMEZONE,-5);                                      // Set the timezone to EST - sorry at least I know what it is
       FRAMwrite8(OPENTIME,6);                                           // These set the defaults if the FRAM is erased
       FRAMwrite8(CLOSETIME,23);
       FRAMwrite8(KEEPSESSION,2);
@@ -197,7 +197,7 @@ void setup()                                                      // Note: Disco
   keepSession = FRAMread8(KEEPSESSION);                             // keepSession - The time to keep a session alive - in seconds
   openTime = FRAMread8(OPENTIME);
   closeTime = FRAMread8(CLOSETIME);
-  int8_t tempTimeZoneOffset = FRAMread8(TIMEZONEADDR);                  // Load Time zone data from FRAM
+  int8_t tempTimeZoneOffset = FRAMread8(TIMEZONE);                  // Load Time zone data from FRAM
   Time.zone((float)tempTimeZoneOffset);
 
   controlRegister = FRAMread8(CONTROLREGISTER);                         // Read the Control Register for system modes so they stick even after reset
@@ -208,7 +208,7 @@ void setup()                                                      // Note: Disco
 
   PMICreset();                                                          // Executes commands that set up the PMIC for Solar charging - once we know the Solar Mode
 
-  if (!lowPowerMode && !lowBatteryMode && Time.hour() >= openTime && Time.hour() < closeTime) connectToParticle();  // If not lowpower or sleeping, we can connect
+  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= closeTime || Time.hour() < openTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
 
   takeMeasurements();
   StartStopTest(1);                                                     // Default action is for the test to be running
@@ -661,7 +661,7 @@ int setTimeZone(String command)
   int8_t tempTimeZoneOffset = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
   if ((tempTimeZoneOffset < -12) | (tempTimeZoneOffset > 12)) return 0;   // Make sure it falls in a valid range or send a "fail" result
   Time.zone((float)tempTimeZoneOffset);
-  FRAMwrite8(TIMEZONEADDR,tempTimeZoneOffset);                             // Store the new value in FRAMwrite8
+  FRAMwrite8(TIMEZONE,tempTimeZoneOffset);                             // Store the new value in FRAMwrite8
   t = Time.now();
   snprintf(data, sizeof(data), "Time zone offset %i",tempTimeZoneOffset);
   Particle.publish("Time",data);
@@ -675,7 +675,7 @@ int setOpenTime(String command)
   char * pEND;
   char data[256];
   int8_t tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
-  if ((tempTime < 0) | (tempTime > 23)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  if ((tempTime < 0) || (tempTime > 23)) return 0;   // Make sure it falls in a valid range or send a "fail" result
   openTime = tempTime;
   FRAMwrite8(OPENTIME,openTime);                             // Store the new value in FRAMwrite8
   snprintf(data, sizeof(data), "Open time set to %i",openTime);
@@ -688,7 +688,7 @@ int setCloseTime(String command)
   char * pEND;
   char data[256];
   int8_t tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
-  if ((tempTime < 0) | (tempTime > 24)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  if ((tempTime < 0) || (tempTime > 24)) return 0;   // Make sure it falls in a valid range or send a "fail" result
   closeTime = tempTime;
   FRAMwrite8(CLOSETIME,closeTime);                             // Store the new value in FRAMwrite8
   snprintf(data, sizeof(data), "Closing time set to %i",closeTime);
