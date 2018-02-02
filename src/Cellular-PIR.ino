@@ -21,15 +21,15 @@
 #define VERSIONNUMBER 9             // Increment this number each time the memory map is changed
 #define WORDSIZE 8                  // For the Word size the number of bytes in a "word"
 #define PAGESIZE 4096               // Memory size in bytes / word size - 256kb FRAM
-#define HOURLYOFFSET 24             // First word of hourly counts (remember we start counts at 1)
-#define HOURLYCOUNTNUMBER 4064      // used in modulo calculations - sets the # of hours stored - 256k (4096-14-2)
+#define CURRENTOFFSET 24             // First word of hourly counts (remember we start counts at 1)
+#define CURRENTCOUNTNUMBER 4064      // used in modulo calculations - sets the # of hours stored - 256k (4096-14-2)
 // First Word - 8 bytes for setting global values
 #define VERSIONADDR 0x0             // Where we store the memory map version number
 #define SENSITIVITY 0x1             // Sensitivity for Accelerometer sensors
 #define RESETCOUNT 0x2              // This is where we keep track of how often the Electron was reset
 #define KEEPSESSION 0x3         // This is how long we will wait before we start a new session 0-250 seconds
 #define TIMEZONE  0x4           // Store the local time zone data
-#define OPENTIME 0x2                // Hour for opening the park / store / etc - military time (e.g. 6 is 6am)
+#define OPENTIMEADDR 0x5                // Hour for opening the park / store / etc - military time (e.g. 6 is 6am)
 #define CLOSETIME 0x6               // Hour for closing of the park / store / etc - military time (e.g 23 is 11pm)
 #define CONTROLREGISTER 0x7         // This is the control register for storing the current state - future use
 //Second and Third words bytes for storing current counts
@@ -37,13 +37,13 @@
 #define CURRENTHOURLYDURATION 0xA   // Current Hourly Duration Count - 16 bits - in seconds
 #define CURRENTDAILYCOUNT 0xC       // Current Daily Count - 16 bits
 #define CURRENTCOUNTSTIME 0xE       // Time of last count - 32 bits
-#define HOURLYPOINTER 0x11          // Two bytes for hourly pointer
+#define CURRENTPOINTER 0x12          // Two bytes for hourly pointer
                                     // Four open bytes here which takes us to the third word
-//These are the hourly and daily offsets that make up the respective words
-#define HOURLYCOUNTOFFSET 4         // Offsets for the values in the hourly words
-#define HOURLYBATTOFFSET 6          // Where the hourly battery charge is stored
+//These are the offsets that make up the respective words (4 bytes time, 2 bytes count, 2 bytes duration)
+#define CURRENTCOUNTOFFSET 4         // Offsets for the values in the hourly words
+#define CURRENTDURATIONOFFSET 6      // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.53"
+#define SOFTWARERELEASENUMBER "0.60"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                           // Library for FRAM functions
@@ -98,8 +98,8 @@ const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 
 // FRAM and Unix time variables
 time_t t;
-byte openTime;
-byte closeTime;
+int openTime;
+int closeTime;
 byte lastHour = 0;                          // For recording the startup values
 byte lastDate = 0;                          // These values make sure we record events if time has lapsed
 int hourlyDurationSeconds = 0;              // This is where we count the duration seconds which are defined by the value of granularity
@@ -180,7 +180,7 @@ void setup()                                                      // Note: Disco
     else {
       FRAMwrite8(CONTROLREGISTER,0);                                    // Need to reset so not in low power or low battery mode
       FRAMwrite8(TIMEZONE,-5);                                      // Set the timezone to EST - sorry at least I know what it is
-      FRAMwrite8(OPENTIME,6);                                           // These set the defaults if the FRAM is erased
+      FRAMwrite8(OPENTIMEADDR,6);                                           // These set the defaults if the FRAM is erased
       FRAMwrite8(CLOSETIME,23);
       FRAMwrite8(KEEPSESSION,2);
     }
@@ -195,11 +195,13 @@ void setup()                                                      // Note: Disco
 
   // Here we load the values from FRAM
   keepSession = FRAMread8(KEEPSESSION);                             // keepSession - The time to keep a session alive - in seconds
-  openTime = FRAMread8(OPENTIME);
+  openTime = FRAMread8(OPENTIMEADDR);
   closeTime = FRAMread8(CLOSETIME);
+
   int8_t tempTimeZoneOffset = FRAMread8(TIMEZONE);                  // Load Time zone data from FRAM
   Time.zone((float)tempTimeZoneOffset);
 
+  // And set the flags from the control register
   controlRegister = FRAMread8(CONTROLREGISTER);                         // Read the Control Register for system modes so they stick even after reset
   lowPowerMode = (0b00000001 & controlRegister);                        // lowPowerMode
   lowBatteryMode = (0b000000010 & controlRegister);                     // lowBatteryMode
@@ -211,7 +213,19 @@ void setup()                                                      // Note: Disco
   if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= closeTime || Time.hour() < openTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
 
   takeMeasurements();
-  StartStopTest(1);                                                     // Default action is for the test to be running
+
+  currentHourlyPeriod = Time.hour();   // Sets the hour period for when the count starts (see #defines)
+  currentDailyPeriod = Time.day();     // And the day  (see #defines)
+  // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
+  time_t unixTime = FRAMread32(CURRENTCOUNTSTIME);
+  lastHour = Time.hour(unixTime);
+  lastDate = Time.day(unixTime);
+  dailyPersonCount = FRAMread16(CURRENTDAILYCOUNT);  // Load Daily Count from memory
+  hourlyPersonCount = FRAMread16(CURRENTHOURLYCOUNT);  // Load Hourly Count from memory
+  hourlyDurationSeconds = FRAMread16(CURRENTHOURLYDURATION);  // Load Hourly Duration Count from memory
+  lastEvent = sessionStart = Time.now();
+
+  if(!digitalRead(userSwitch)) printFRAMContents();       // Will go into memory dump mode - connect serial 9600
 
   if (state != ERROR_STATE) state = IDLE_STATE;                         // IDLE unless error from above code
 }
@@ -306,7 +320,6 @@ void loop()
       if (verboseMode) Particle.publish("Status",Status);  // Will continue - even if not connected.
       Status[0] = '\0';
     }
-    LogHourlyEvent();
     sendEvent();
     publishTimeStamp = millis();
     digitalWrite(donePin,HIGH);
@@ -356,7 +369,8 @@ void recordCount()                                          // Handles counting 
   if (verboseMode) Particle.publish("Count",data);
   int sessionLength = difftime(lastEvent,sessionStart)+keepSession;
 
-  if (timeLapsed > keepSession) {            // Check to see if this is a new session or just a keep session event
+  if (timeLapsed > keepSession) {                           // Check to see if this is a new session or just a keep session event
+    // Record the current hourly values in the current count section FRAM
     hourlyPersonCount++;                                    // Increment the PersonCount
     FRAMwrite16(CURRENTHOURLYCOUNT, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
     hourlyDurationSeconds += sessionLength;               // Increment the duration counter as well
@@ -364,10 +378,21 @@ void recordCount()                                          // Handles counting 
     dailyPersonCount++;                                     // Increment the PersonCount
     FRAMwrite16(CURRENTDAILYCOUNT, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
     FRAMwrite32(CURRENTCOUNTSTIME, sessionStart);           // Write to FRAM - this is so we know when the last counts were saved
+    // Record the event values in main FRAM
+    unsigned int pointer = (CURRENTOFFSET + FRAMread16(CURRENTPOINTER))*WORDSIZE;  // get the pointer from memory and add the offset
+    FRAMwrite32(pointer, sessionStart);   // Write to FRAM beginning time for each event
+    FRAMwrite16(pointer+CURRENTCOUNTOFFSET,static_cast<uint16_t>(hourlyPersonCount));
+    FRAMwrite16(pointer+CURRENTDURATIONOFFSET,static_cast<uint16_t>(sessionLength));
+    unsigned int newCURRENTPOINTER = (FRAMread16(CURRENTPOINTER)+1) % CURRENTCOUNTNUMBER;  // This is where we "wrap" the count to stay in our memory space
+    FRAMwrite16(CURRENTPOINTER,newCURRENTPOINTER);
+    // Update the LED so we can see a new session is recoded
     ledState = !ledState;                                   // toggle the status of the LEDPIN:
     digitalWrite(blueLED, ledState);                        // update the LED pin itself
-    snprintf(data, sizeof(data), "New visit, hourlry count: %i with a duration of %i",hourlyPersonCount,sessionLength);
+    // Publish if ew are in verbose mode
+    snprintf(data, sizeof(data), "New visit: %i, pointer %i duration of %i",hourlyPersonCount,pointer,sessionLength);
     if (verboseMode) Particle.publish("Count",data);
+    printFRAMContents();
+    // Reset the time values to start the next session
     lastEvent = currentEvent;
     sessionStart = currentEvent;
   }
@@ -382,45 +407,9 @@ void recordCount()                                          // Handles counting 
       controlRegister = (0b1111110 & controlRegister);     // Will set the lowPowerMode bit to zero
       FRAMwrite8(CONTROLREGISTER,controlRegister);
       lowPowerMode = false;
+      connectToParticle();        // Recoonect
     }
   }
-}
-
-void StartStopTest(boolean startTest)  // Since the test can be started from the serial menu or the Simblee - created a function
-{
- if (startTest) {
-     currentHourlyPeriod = Time.hour();   // Sets the hour period for when the count starts (see #defines)
-     currentDailyPeriod = Time.day();     // And the day  (see #defines)
-     // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
-     time_t unixTime = FRAMread32(CURRENTCOUNTSTIME);
-     lastHour = Time.hour(unixTime);
-     lastDate = Time.day(unixTime);
-     dailyPersonCount = FRAMread16(CURRENTDAILYCOUNT);  // Load Daily Count from memory
-     hourlyPersonCount = FRAMread16(CURRENTHOURLYCOUNT);  // Load Hourly Count from memory
-     hourlyDurationSeconds = FRAMread16(CURRENTHOURLYDURATION);  // Load Hourly Duration Count from memory
-     if (currentHourlyPeriod != lastHour) LogHourlyEvent();
- }
- else {
-     t = Time.now();
-     FRAMwrite16(CURRENTDAILYCOUNT, static_cast<uint16_t>(dailyPersonCount));   // Load Daily Count to memory
-     FRAMwrite16(CURRENTHOURLYCOUNT, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-     FRAMwrite16(CURRENTHOURLYDURATION, static_cast<uint16_t>(hourlyDurationSeconds));  // Load Hourly Duration Count to memory
-     FRAMwrite32(CURRENTCOUNTSTIME, t);   // Write to FRAM - this is so we know when the last counts were saved
-     hourlyPersonCount = 0;        // Reset Person Count
-     dailyPersonCount = 0;         // Reset Person Count
- }
-}
-
-void LogHourlyEvent() // Log Hourly Event()
-{
-  time_t LogTime = FRAMread32(CURRENTCOUNTSTIME);     // This is the last event recorded - this sets the hourly period
-  unsigned int pointer = (HOURLYOFFSET + FRAMread16(HOURLYPOINTER))*WORDSIZE;  // get the pointer from memory and add the offset
-  LogTime -= (60*Time.minute(LogTime) + Time.second(LogTime)); // So, we need to subtract the minutes and seconds needed to take to the top of the hour
-  FRAMwrite32(pointer, LogTime);   // Write to FRAM - this is the end of the period
-  FRAMwrite16(pointer+HOURLYCOUNTOFFSET,static_cast<uint16_t>(hourlyPersonCount));
-  FRAMwrite8(pointer+HOURLYBATTOFFSET,stateOfCharge);
-  unsigned int newHOURLYPOINTER = (FRAMread16(HOURLYPOINTER)+1) % HOURLYCOUNTNUMBER;  // This is where we "wrap" the count to stay in our memory space
-  FRAMwrite16(HOURLYPOINTER,newHOURLYPOINTER);
 }
 
 void sendEvent()
@@ -674,10 +663,10 @@ int setOpenTime(String command)
 {
   char * pEND;
   char data[256];
-  int8_t tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  int tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
   if ((tempTime < 0) || (tempTime > 23)) return 0;   // Make sure it falls in a valid range or send a "fail" result
   openTime = tempTime;
-  FRAMwrite8(OPENTIME,openTime);                             // Store the new value in FRAMwrite8
+  FRAMwrite8(OPENTIMEADDR,openTime);                             // Store the new value in FRAMwrite8
   snprintf(data, sizeof(data), "Open time set to %i",openTime);
   Particle.publish("Time",data);
   return 1;
@@ -687,7 +676,7 @@ int setCloseTime(String command)
 {
   char * pEND;
   char data[256];
-  int8_t tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  int tempTime = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
   if ((tempTime < 0) || (tempTime > 24)) return 0;   // Make sure it falls in a valid range or send a "fail" result
   closeTime = tempTime;
   FRAMwrite8(CLOSETIME,closeTime);                             // Store the new value in FRAMwrite8
@@ -715,4 +704,41 @@ int setLowPowerMode(String command)                                   // This is
   }
   FRAMwrite8(CONTROLREGISTER,controlRegister);                         // Write to the control register
   return 1;
+}
+
+void printFRAMContents()
+{
+  for (int i=0; i<10; i++) {
+    digitalWrite(blueLED,HIGH);
+    delay(500);
+    digitalWrite(blueLED,LOW);
+    delay(500);
+  }
+  unsigned int pointer;
+  time_t t;
+  int countValue;
+  int durationValue;
+  Serial.println("Pointer     Time                Count  Duration");
+  for (int i=0; i < FRAMread16(CURRENTPOINTER); i++) {
+    pointer = (CURRENTOFFSET + i)*WORDSIZE;  // get the pointer from memory and add the offset
+    t = FRAMread32(pointer);
+    countValue = FRAMread16(pointer+CURRENTCOUNTOFFSET);
+    durationValue = FRAMread16(pointer+CURRENTDURATIONOFFSET);
+    Serial.print(pointer);
+    Serial.print("  ");
+    Serial.print(Time.timeStr(t));
+    Serial.print("  ");
+    Serial.print(countValue);
+    Serial.print("   ");
+    Serial.print(durationValue);
+    Serial.println(" sec");
+  }
+  Serial.println("  ");
+  Serial.println("Report complete - press reset button to restart");
+  while(1) {
+    digitalWrite(blueLED,HIGH);
+    delay(500);
+    digitalWrite(blueLED,LOW);
+    delay(500);
+  }
 }
