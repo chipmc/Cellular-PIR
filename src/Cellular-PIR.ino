@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.65"
+#define SOFTWARERELEASENUMBER "0.66"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -173,12 +173,18 @@ void setup()                                // Note: Disconnected Setup()
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
     snprintf(Status,13,"Missing FRAM");                                 // Can't communicate with FRAM - fatal error
+    resetWaitOver = false;
+    resetWaitTimer.reset();
     state = ERROR_STATE;
   }
   else if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) {                   // Check to see if the memory map in the sketch matches the data on the chip
     snprintf(Status,13,"Erasing FRAM");
     ResetFRAM();                                                        // Reset the FRAM to correct the issue
-    if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) state = ERROR_STATE;   // Resetting did not fix the issue
+    if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) {
+      resetWaitOver = false;
+      resetWaitTimer.reset();
+      state = ERROR_STATE;   // Resetting did not fix the issue
+    }
     else {
       FRAMwrite8(CONTROLREGISTER,0);                                    // Need to reset so not in low power or low battery mode
       FRAMwrite8(TIMEZONE,static_cast<int8_t>(-5));                     // Set the timezone to EST - sorry at least I know what it is
@@ -313,6 +319,8 @@ void loop()
   case REPORTING_STATE: {                                               // Reporting - hourly or on command
     if (!Particle.connected()) {
       if (!connectToParticle()) {
+        resetWaitOver = false;
+        resetWaitTimer.reset();
         state = ERROR_STATE;
         break;
       }
@@ -468,6 +476,8 @@ void sensorISR()
   sensorDetect = true;                              // sets the sensor flag for the main loop
   currentEvent = Time.now();                        // Time in time_t of the interrupt
 }
+
+
 
 void stayAwakeISR()
 {
