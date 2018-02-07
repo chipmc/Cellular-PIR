@@ -267,19 +267,15 @@ void loop()
         disconnectFromParticle();                                       // If connected, we need to disconned and power down the modem
       }
       detachInterrupt(intPin);                                          // Done sensing for the day
-      dailyPersonCount = 0;                                             // All the counts have been reported so time to zero everything
-      FRAMwrite16(CURRENTDAILYCOUNT, 0);                                // Reset the counts in FRAM as well
-      resetCount = 0;
+      FRAMwrite16(CURRENTDAILYCOUNT, 0);                                // Reset the counts in FRAM
       FRAMwrite8(RESETCOUNT,resetCount);
-      hourlyPersonCount = 0;
       FRAMwrite16(CURRENTHOURLYCOUNT, 0);
-      hourlyDurationSeconds = 0;
       FRAMwrite16(CURRENTHOURLYDURATION, 0);
+      dailyPersonCount = resetCount = hourlyPersonCount = hourlyDurationSeconds = 0; // All the counts have been reported so time to zero everything
       ledState = false;
       digitalWrite(blueLED,LOW);                                        // Turn off the LED
       digitalWrite(tmp36Shutdwn, LOW);                                  // Turns off the temp sensor
-      digitalWrite(donePin,HIGH);
-      digitalWrite(donePin,LOW);                                        // Pet the watchdog
+      watchdogISR();                                                    // Pet the watchdog
       readyForBed = true;                                               // Set the flag for the night
     }
     int secondsToHour = (60*(60 - Time.minute()));                      // Time till the top of the hour
@@ -290,15 +286,13 @@ void loop()
       if (Particle.connected())
       {
         Particle.publish("State","Disconnecting from Particle");
-        delay(2000);
         disconnectFromParticle();                                       // If connected, we need to disconned and power down the modem
       }
       ledState = false;                                                 // Turn out the light
       digitalWrite(blueLED,LOW);                                        // Turn off the LED
-      watchdogISR();
+      watchdogISR();                                                    // Pet the watchdog
       int secondsToHour = (60*(60 - Time.minute()));                    // Time till the top of the hour
-      System.sleep(intPin, RISING, secondsToHour);                      // Sensor will wake us with an interrupt
-
+      System.sleep(intPin, RISING, secondsToHour);                      // Sensor will wake us with an interrupt or timeout at the hour
       state = IDLE_STATE;                                               // Back to the IDLE_STATE after a nap
     } break;
 
@@ -310,8 +304,7 @@ void loop()
       ledState = false;
       digitalWrite(blueLED,LOW);                                        // Turn off the LED
       digitalWrite(tmp36Shutdwn, LOW);                                  // Turns off the temp sensor
-      digitalWrite(donePin,HIGH);
-      digitalWrite(donePin,LOW);                                        // Pet the watchdog
+      watchdogISR();                                       // Pet the watchdog
       int secondsToHour = (60*(60 - Time.minute()));                    // Time till the top of the hour
       System.sleep(SLEEP_MODE_DEEP,secondsToHour);                      // Very deep sleep till the next hour - then resets
     } break;
@@ -332,8 +325,6 @@ void loop()
       Status[0] = '\0';
     }
     sendEvent();                                                        // Send data to Ubidots
-    webhookWaitOver = false;
-    webhookWaitTimer.reset();                                            // Start the webhook timer
     watchdogISR();                                                      // Pet the watchdog once an hour
     if (verboseMode) Particle.publish("State","Waiting for Response");
     state = RESP_WAIT_STATE;                                            // Wait for Response
@@ -348,9 +339,9 @@ void loop()
       if (verboseMode) Particle.publish("State","Idle");
     }
     else if (webhookWaitOver) {                                         // If it takes too long - will need to reset
-      state = ERROR_STATE;                                              // Response timed out
       resetWaitOver = false;
       resetWaitTimer.reset();
+      state = ERROR_STATE;                                              // Response timed out
       Particle.publish("State","Response Timeout Error");
     }
     break;
@@ -359,7 +350,7 @@ void loop()
     if (resetWaitOver)
     {
       Particle.publish("State","ERROR_STATE - Resetting");
-      delay(2000);
+      delay(2000);                                          // This makes sure it goes through before reset
       if (resetCount <= 3)  System.reset();                 // Today, only way out is reset
       else {
         FRAMwrite8(RESETCOUNT,0);                           // Time for a hard reset
@@ -376,7 +367,6 @@ void recordCount()                                          // Handles counting 
   sensorDetect = false;                                     // Reset the flag
   int timeLapsed = difftime(currentEvent,lastEvent);        // This is the time between this event and last
   int sessionLength = difftime(lastEvent,sessionStart)+keepSession;
-
   if (timeLapsed > keepSession) {                           // Check to see if this is a new session or just a keep session event
     // Record the current hourly values in the current count section FRAM
     hourlyPersonCount++;                                    // Increment the PersonCount
@@ -417,14 +407,16 @@ void recordCount()                                          // Handles counting 
 
 void sendEvent()
 {
-  char data[256];                                         // Store the date in this character array - not global
+  char data[256];                                                         // Store the date in this character array - not global
   averageHourlyDuration = int(hourlyDurationSeconds / hourlyPersonCount);
   snprintf(data, sizeof(data), "{\"hourly\":%i, \"avgduration\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i}",hourlyPersonCount, averageHourlyDuration, dailyPersonCount, stateOfCharge, temperatureF,resetCount);
   Particle.publish("Occupancy_Hook", data, PRIVATE);
-  hourlyPersonCountSent = hourlyPersonCount; // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
+  hourlyPersonCountSent = hourlyPersonCount;                              // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
   hourlyDurationSecondsSent = hourlyDurationSeconds;
-  currentHourlyPeriod = Time.hour();  // Change the time period
-  dataInFlight = true; // set the data inflight flag
+  currentHourlyPeriod = Time.hour();                                      // Change the time period
+  dataInFlight = true;                                                    // set the data inflight flag
+  webhookWaitOver = false;
+  webhookWaitTimer.reset();                                               // Start the webhook timer
 }
 
 void UbidotsHandler(const char *event, const char *data)  // Looks at the response from Ubidots - Will reset Photon if no successful response
@@ -476,7 +468,6 @@ void sensorISR()
   sensorDetect = true;                              // sets the sensor flag for the main loop
   currentEvent = Time.now();                        // Time in time_t of the interrupt
 }
-
 
 
 void stayAwakeISR()
