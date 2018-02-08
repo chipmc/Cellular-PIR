@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.66"
+#define SOFTWARERELEASENUMBER "0.67"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -136,11 +136,9 @@ void setup()                                // Note: Disconnected Setup()
   pinMode(tmp36Shutdwn,OUTPUT);             // Supports shutting down the TMP-36 to save juice
   digitalWrite(tmp36Shutdwn, HIGH);         // Turns on the temp sensor
   pinMode(donePin,OUTPUT);                  // Allows us to pet the watchdog
-  watchdogISR();                            // Pet the watchdog
   pinMode(hardResetPin,OUTPUT);             // For a hard reset active HIGH
 
-  attachInterrupt(wakeUpPin, watchdogISR, RISING);   // The watchdog timer will signal us and we have to respond
-  attachInterrupt(intPin,sensorISR,RISING);          // Will know when the PIR sensor is triggered
+  watchdogISR();                            // Pet the watchdog
 
   char responseTopic[125];
   String deviceID = System.deviceID();                                // Multiple Electrons share the same hook - keeps things straight
@@ -169,7 +167,6 @@ void setup()                                // Note: Disconnected Setup()
   Particle.function("Set-Timezone",setTimeZone);
   Particle.function("Set-OpenTime",setOpenTime);
   Particle.function("Set-Close",setCloseTime);
-
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
     snprintf(Status,13,"Missing FRAM");                                 // Can't communicate with FRAM - fatal error
@@ -218,9 +215,9 @@ void setup()                                // Note: Disconnected Setup()
 
   PMICreset();                                                          // Executes commands that set up the PMIC for Solar charging - once we know the Solar Mode
 
-  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= closeTime || Time.hour() < openTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
-
   takeMeasurements();                                                   // For the benefit of monitoring the device
+
+  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= closeTime || Time.hour() < openTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
 
   currentHourlyPeriod = Time.hour();                                    // Sets the hour period for when the count starts (see #defines)
   currentDailyPeriod = Time.day();                                      // And the day  (see #defines)
@@ -234,6 +231,9 @@ void setup()                                // Note: Disconnected Setup()
   lastEvent = sessionStart = Time.now();
 
   if(!digitalRead(userSwitch)) printFRAMContents();                     // Will go into memory dump mode - connect serial 9600
+
+  attachInterrupt(wakeUpPin, watchdogISR, RISING);                      // The watchdog timer will signal us and we have to respond
+  attachInterrupt(intPin,sensorISR,RISING);                             // Will know when the PIR sensor is triggered
 
   if (state != ERROR_STATE) state = IDLE_STATE;                         // IDLE unless error from above code
 }
