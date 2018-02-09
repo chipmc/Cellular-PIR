@@ -15,7 +15,7 @@
     The watchdog timer should be set with a period of over 1 hour for the lowest power useage
 
     The mode and states will be set and recoded in the CONTROLREGISTER so resets will not change the mode
-    Control Register - bits 7-4, 3 - Verbose Mode, 2- Solar Power Mode, 1 - Low Battery Mode, 0 - Low Power Mode
+    Control Register - bits 7-4, 3 - Verbose Mode, 2- Solar Power Mode, 1 - Open, 0 - Low Power Mode
 */
 
 // Easy place to change global numbers
@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.67"
+#define SOFTWARERELEASENUMBER "0.68"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -184,7 +184,6 @@ void setup()                                // Note: Disconnected Setup()
     }
     else {
       FRAMwrite8(CONTROLREGISTER,0);                                    // Need to reset so not in low power or low battery mode
-      FRAMwrite8(TIMEZONE,static_cast<int8_t>(-5));                     // Set the timezone to EST - sorry at least I know what it is
       FRAMwrite8(OPENTIMEADDR,0);                                       // These set the defaults if the FRAM is erased
       FRAMwrite8(CLOSETIMEADDR,24);                                     // This will ensure the device does not sleep
       FRAMwrite8(KEEPSESSION,2);
@@ -204,18 +203,21 @@ void setup()                                // Note: Disconnected Setup()
   closeTime = FRAMread8(CLOSETIMEADDR);
 
   int8_t tempTimeZoneOffset = FRAMread8(TIMEZONE);                      // Load Time zone data from FRAM
-  Time.zone((float)tempTimeZoneOffset);
+  if (tempTimeZoneOffset <= 12 && tempTimeZoneOffset >= -12)  Time.zone((float)tempTimeZoneOffset);  // Load Timezone from FRAM
+  else Time.zone(-5);                                                   // Default is EST in case proper value not in FRAM
 
   // And set the flags from the control register
   controlRegister = FRAMread8(CONTROLREGISTER);                         // Read the Control Register for system modes so they stick even after reset
   lowPowerMode    = (0b00000001 & controlRegister);                     // Set the lowPowerMode
-  lowBatteryMode  = (0b00000010 & controlRegister);                     // Set the lowBatteryMode
   solarPowerMode  = (0b00000100 & controlRegister);                     // Set the solarPowerMode
   verboseMode     = (0b00001000 & controlRegister);                     // Set the verboseMode
 
   PMICreset();                                                          // Executes commands that set up the PMIC for Solar charging - once we know the Solar Mode
 
   takeMeasurements();                                                   // For the benefit of monitoring the device
+
+  if (stateOfCharge <= lowBattLimit) lowBatteryMode = true;
+  else lowBatteryMode = false;
 
   if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= closeTime || Time.hour() < openTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
 
@@ -254,6 +256,7 @@ void loop()
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;    // We want to report on the hour but not after bedtime
     if ((Time.hour() >= closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;   // The park is closed, time to sleep
     if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;               // The battery is low - sleep
+    else lowBatteryMode = false;
     break;
 
   case SLEEPING_STATE: {                                                // This state is triggered once the park closes and runs until it opens
@@ -729,6 +732,8 @@ This mode gives you granularity you don't get in the hourly average / summarty d
 
 void printFRAMContents()                // Prints out the inidividual event values in FRAM
 {
+  connectToParticle();                  // For recovery purposes
+  FRAMwrite8(CONTROLREGISTER,8);        // Take device out of low power mode and into Verbose-Mode
   for (int i=0; i<10; i++) {            // Blinks the blue LED and gives us time to connect Serial
     digitalWrite(blueLED,HIGH);
     delay(500);
