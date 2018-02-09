@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.68"
+#define SOFTWARERELEASENUMBER "0.69"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -255,7 +255,7 @@ void loop()
     if (lowPowerMode && stayAwakeOver) state = NAPPING_STATE;
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;    // We want to report on the hour but not after bedtime
     if ((Time.hour() >= closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;   // The park is closed, time to sleep
-    if (stateOfCharge <= lowBattLimit) LOW_BATTERY_STATE;               // The battery is low - sleep
+    if (stateOfCharge <= lowBattLimit) state = LOW_BATTERY_STATE;               // The battery is low - sleep
     else lowBatteryMode = false;
     break;
 
