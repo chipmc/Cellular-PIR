@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.71"
+#define SOFTWARERELEASENUMBER "0.72"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -96,7 +96,6 @@ int lowBattLimit;                                   // Trigger for Low Batt Stat
 bool solarPowerMode;                                // Changes the PMIC settings
 bool verboseMode;                                   // Enables more active communications for configutation and setup
 retained char Signal[17];                           // Used to communicate Wireless RSSI and Description
-char Status[17] = "";                               // Used to communciate updates on System Status
 const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 
 // FRAM and Unix time variables
@@ -169,12 +168,10 @@ void setup()                                // Note: Disconnected Setup()
   Particle.function("Set-Close",setCloseTime);
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
-    snprintf(Status,13,"Missing FRAM");                                 // Can't communicate with FRAM - fatal error
     resetTimeStamp = millis();
     state = ERROR_STATE;
   }
   else if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) {                   // Check to see if the memory map in the sketch matches the data on the chip
-    snprintf(Status,13,"Erasing FRAM");
     ResetFRAM();                                                        // Reset the FRAM to correct the issue
     if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) {
       resetTimeStamp = millis();
@@ -317,12 +314,8 @@ void loop()
       }
     }
     takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
-    if (Status[0] != '\0')
-    {
-      if (verboseMode) Particle.publish("Status",Status);               // Will continue - even if not connected.
-      Status[0] = '\0';
-    }
     sendEvent();                                                        // Send data to Ubidots
+    webhookTimeStamp = millis();
     if (verboseMode) Particle.publish("State","Waiting for Response");
     state = RESP_WAIT_STATE;                                            // Wait for Response
     } break;
@@ -404,14 +397,14 @@ void recordCount()                                          // Handles counting 
 void sendEvent()
 {
   char data[256];                                                         // Store the date in this character array - not global
-  averageHourlyDuration = int(hourlyDurationSeconds / hourlyPersonCount);
+  if (hourlyPersonCount > 0) averageHourlyDuration = int(hourlyDurationSeconds / hourlyPersonCount);
+  else averageHourlyDuration = 0;
   snprintf(data, sizeof(data), "{\"hourly\":%i, \"avgduration\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i}",hourlyPersonCount, averageHourlyDuration, dailyPersonCount, stateOfCharge, temperatureF,resetCount);
   Particle.publish("Occupancy_Hook", data, PRIVATE);
   hourlyPersonCountSent = hourlyPersonCount;                              // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
   hourlyDurationSecondsSent = hourlyDurationSeconds;
   currentHourlyPeriod = Time.hour();                                      // Change the time period
   dataInFlight = true;                                                    // set the data inflight flag
-  webhookTimeStamp = millis();
 }
 
 void UbidotsHandler(const char *event, const char *data)  // Looks at the response from Ubidots - Will reset Photon if no successful response
@@ -581,7 +574,6 @@ int setKeepSession(String command)  // This is the amount of time in seconds we 
   if (verboseMode) Particle.publish("Variables",data);
   return 1;
 }
-
 
 int sendNow(String command) // Function to force sending data in current hour
 {
