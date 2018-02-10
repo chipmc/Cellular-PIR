@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.69"
+#define SOFTWARERELEASENUMBER "0.70"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -58,6 +58,9 @@ SYSTEM_THREAD(ENABLED);               // Means my code will not be held up by Pa
 STARTUP(System.enableFeature(FEATURE_RESET_INFO));
 FuelGauge batteryMonitor;             // Prototype for the fuel gauge (included in Particle core library)
 PMIC power;                           //Initalize the PMIC class so you can call the Power Management functions below.
+
+ApplicationWatchdog applicationWatchDog(120000, System.reset);
+
 
 // State Maching Variables
 enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, SLEEPING_STATE, NAPPING_STATE, LOW_BATTERY_STATE, REPORTING_STATE, RESP_WAIT_STATE };
@@ -75,19 +78,20 @@ const int donePin =       D6;         // Pin the Electron uses to "pet" the watc
 const int blueLED =       D7;         // This LED is on the Electron itself
 
 // Timing Variables
-Timer stayAwakeTimer(90000,stayAwakeISR,true);      // This is the timer we will use to stay awake for 90 seconds when in low power mode
-Timer webhookWaitTimer(45000,webhookWaitISR,true);  // The amount of time we will wait for a webhook response
-Timer resetWaitTimer(30000,resetWaitISR,true);      // How long we will wait in ERROR_STATE until we push the reset button
+unsigned long stayAwake = 90000;                    // Long interval timing
+unsigned long webhookWait = 45000;
+unsigned long resetWait = 30000;
+unsigned long stayAwakeTimeStamp = 0;                  // Starts the timeframe
+unsigned long webhookTimeStamp = 0;
+unsigned long resetTimeStamp = 0;
 unsigned long publishTimeStamp = 0;                 // Keep track of when we publish a webhook
-bool resetWaitOver = false;                         // Flag for resetWaitTimer
-bool webhookWaitOver = false;                       // Flag for the webhookWaitTimer
-bool stayAwakeOver = true;                          // Flag for the stayAwakeTimer
 bool readyForBed = false;
 
 // Program Variables
 int temperatureF;                                   // Global variable so we can monitor via cloud variable
 int resetCount;                                     // Counts the number of times the Electron has had a pin reset
 bool ledState = LOW;                                // variable used to store the last LED status, to toggle the light
+bool pettingEnabled = true;                         // Let's us pet the hardware watchdog
 const char* releaseNumber = SOFTWARERELEASENUMBER;  // Displays the release on the menu
 byte controlRegister;                               // Stores the control register values
 bool lowPowerMode;                                  // Flag for Low Power Mode operations
@@ -170,16 +174,14 @@ void setup()                                // Note: Disconnected Setup()
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
     snprintf(Status,13,"Missing FRAM");                                 // Can't communicate with FRAM - fatal error
-    resetWaitOver = false;
-    resetWaitTimer.reset();
+    resetTimeStamp = millis();
     state = ERROR_STATE;
   }
   else if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) {                   // Check to see if the memory map in the sketch matches the data on the chip
     snprintf(Status,13,"Erasing FRAM");
     ResetFRAM();                                                        // Reset the FRAM to correct the issue
     if (FRAMread8(VERSIONADDR) != VERSIONNUMBER) {
-      resetWaitOver = false;
-      resetWaitTimer.reset();
+      resetTimeStamp = millis();
       state = ERROR_STATE;   // Resetting did not fix the issue
     }
     else {
@@ -252,11 +254,12 @@ void loop()
       hourlyPersonCountSent = hourlyDurationSecondsSent = 0;            // Reset for next time
     }
     if (sensorDetect) recordCount();                                    // The ISR had raised the sensor flag
-    if (lowPowerMode && stayAwakeOver) state = NAPPING_STATE;
+    if (lowPowerMode && (millis() > stayAwakeTimeStamp + stayAwake)) state = NAPPING_STATE;
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;    // We want to report on the hour but not after bedtime
     if ((Time.hour() >= closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;   // The park is closed, time to sleep
     if (stateOfCharge <= lowBattLimit) state = LOW_BATTERY_STATE;               // The battery is low - sleep
     else lowBatteryMode = false;
+    applicationWatchDog.checkin();                                      // resets the applicationWatchDog timer
     break;
 
   case SLEEPING_STATE: {                                                // This state is triggered once the park closes and runs until it opens
@@ -313,10 +316,11 @@ void loop()
     } break;
 
   case REPORTING_STATE: {                                               // Reporting - hourly or on command
+    watchdogISR();                                                      // Pet the watchdog once an hour
+    pettingEnabled = false;                                             // Going to see the reporting process through before petting again
     if (!Particle.connected()) {
       if (!connectToParticle()) {
-        resetWaitOver = false;
-        resetWaitTimer.reset();
+        resetTimeStamp = millis();
         state = ERROR_STATE;
         break;
       }
@@ -328,7 +332,6 @@ void loop()
       Status[0] = '\0';
     }
     sendEvent();                                                        // Send data to Ubidots
-    watchdogISR();                                                      // Pet the watchdog once an hour
     if (verboseMode) Particle.publish("State","Waiting for Response");
     state = RESP_WAIT_STATE;                                            // Wait for Response
     } break;
@@ -337,20 +340,19 @@ void loop()
     if (!dataInFlight)                                                  // Response received back to IDLE state
     {
       state = IDLE_STATE;
-      stayAwakeOver = false;
-      stayAwakeTimer.reset();                                           // Set the stayAwake flag and start the timer for low power mode gives you time to connect
+      pettingEnabled = true;                                            // Enable petting before going back into the loop
+      stayAwakeTimeStamp = millis();
       if (verboseMode) Particle.publish("State","Idle");
     }
-    else if (webhookWaitOver) {                                         // If it takes too long - will need to reset
-      resetWaitOver = false;
-      resetWaitTimer.reset();
+    else if (millis() > webhookTimeStamp + webhookWait) {               // If it takes too long - will need to reset
+      resetTimeStamp = millis();
       state = ERROR_STATE;                                              // Response timed out
       Particle.publish("State","Response Timeout Error");
     }
     break;
 
   case ERROR_STATE:                                          // To be enhanced - where we deal with errors
-    if (resetWaitOver)
+    if (millis() > resetTimeStamp + resetWait)
     {
       Particle.publish("State","ERROR_STATE - Resetting");
       delay(2000);                                          // This makes sure it goes through before reset
@@ -418,8 +420,7 @@ void sendEvent()
   hourlyDurationSecondsSent = hourlyDurationSeconds;
   currentHourlyPeriod = Time.hour();                                      // Change the time period
   dataInFlight = true;                                                    // set the data inflight flag
-  webhookWaitOver = false;
-  webhookWaitTimer.reset();                                               // Start the webhook timer
+  webhookTimeStamp = millis();
 }
 
 void UbidotsHandler(const char *event, const char *data)  // Looks at the response from Ubidots - Will reset Photon if no successful response
@@ -472,26 +473,12 @@ void sensorISR()
   currentEvent = Time.now();                        // Time in time_t of the interrupt
 }
 
-
-void stayAwakeISR()
-{
-  stayAwakeOver = true;                             // After the timer fires, will turn off the stayAwake flag
-}
-
-void webhookWaitISR()
-{
-  webhookWaitOver = true;                           // After the timer fires, will turn off the stayAwake flag
-}
-
-void resetWaitISR()
-{
-  resetWaitOver = true;                             // After the timer fires, will turn off the stayAwake flag
-}
-
 void watchdogISR()
 {
-  digitalWrite(donePin, HIGH);                      // Pet the watchdog
-  digitalWrite(donePin, LOW);
+  if (pettingEnabled) {
+    digitalWrite(donePin, HIGH);                      // Pet the watchdog
+    digitalWrite(donePin, LOW);
+  }
 }
 
 // These functions control the connection and disconnection from Particle
