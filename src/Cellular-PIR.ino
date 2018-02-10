@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.70"
+#define SOFTWARERELEASENUMBER "0.71"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -58,9 +58,6 @@ SYSTEM_THREAD(ENABLED);               // Means my code will not be held up by Pa
 STARTUP(System.enableFeature(FEATURE_RESET_INFO));
 FuelGauge batteryMonitor;             // Prototype for the fuel gauge (included in Particle core library)
 PMIC power;                           //Initalize the PMIC class so you can call the Power Management functions below.
-
-ApplicationWatchdog applicationWatchDog(120000, System.reset);
-
 
 // State Maching Variables
 enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, SLEEPING_STATE, NAPPING_STATE, LOW_BATTERY_STATE, REPORTING_STATE, RESP_WAIT_STATE };
@@ -95,7 +92,6 @@ bool pettingEnabled = true;                         // Let's us pet the hardware
 const char* releaseNumber = SOFTWARERELEASENUMBER;  // Displays the release on the menu
 byte controlRegister;                               // Stores the control register values
 bool lowPowerMode;                                  // Flag for Low Power Mode operations
-bool lowBatteryMode;                                // Battery is critical - must not connect and will sleep
 int lowBattLimit;                                   // Trigger for Low Batt State
 bool solarPowerMode;                                // Changes the PMIC settings
 bool verboseMode;                                   // Enables more active communications for configutation and setup
@@ -218,10 +214,7 @@ void setup()                                // Note: Disconnected Setup()
 
   takeMeasurements();                                                   // For the benefit of monitoring the device
 
-  if (stateOfCharge <= lowBattLimit) lowBatteryMode = true;
-  else lowBatteryMode = false;
-
-  if (!lowPowerMode && !lowBatteryMode && !(Time.hour() >= closeTime || Time.hour() < openTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
+  if (!lowPowerMode && (stateOfCharge >= lowBattLimit) && !(Time.hour() >= closeTime || Time.hour() < openTime)) connectToParticle();  // If not lowpower or sleeping, we can connect
 
   currentHourlyPeriod = Time.hour();                                    // Sets the hour period for when the count starts (see #defines)
   currentDailyPeriod = Time.day();                                      // And the day  (see #defines)
@@ -258,8 +251,6 @@ void loop()
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;    // We want to report on the hour but not after bedtime
     if ((Time.hour() >= closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;   // The park is closed, time to sleep
     if (stateOfCharge <= lowBattLimit) state = LOW_BATTERY_STATE;               // The battery is low - sleep
-    else lowBatteryMode = false;
-    applicationWatchDog.checkin();                                      // resets the applicationWatchDog timer
     break;
 
   case SLEEPING_STATE: {                                                // This state is triggered once the park closes and runs until it opens
