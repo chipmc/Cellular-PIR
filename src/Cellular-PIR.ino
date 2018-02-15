@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.73"
+#define SOFTWARERELEASENUMBER "0.74"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -410,9 +410,9 @@ void sendEvent()
 void UbidotsHandler(const char *event, const char *data)  // Looks at the response from Ubidots - Will reset Photon if no successful response
 {
   // Response Template: "{{hourly.0.status_code}}" so, I should only get a 3 digit number back
-  char dataCopy[16];                                    // data needs to be copied since Particle.publish() will clear it
+  char dataCopy[strlen(data)+1];                                    // data needs to be copied since Particle.publish() will clear it
   strncpy(dataCopy, data, sizeof(dataCopy));            // Copy - overflow safe
-  if (!dataCopy) {                                      // First check to see if there is any data
+  if (!strlen(dataCopy)) {                                      // First check to see if there is any data
     Particle.publish("Ubidots Hook", "No Data");
     return;
   }
