@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.74"
+#define SOFTWARERELEASENUMBER "0.78"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -64,71 +64,75 @@ enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, SLEEPING_STATE, NAPP
 State state = INITIALIZATION_STATE;
 
 // Pin Constants
-const int tmp36Pin =      A0;         // Simple Analog temperature sensor
-const int wakeUpPin =     A7;         // This is the Particle Electron WKP pin
-const int enablePin =     B4;         // Hold low to power down the device - for GPS Equipped units
-const int tmp36Shutdwn =  B5;         // Can turn off the TMP-36 to save energy
-const int intPin =        D3;         // PIR Sensor Interrupt pin
-const int hardResetPin =  D4;         // Power Cycles the Electron and the Carrier Board
-const int userSwitch =    D5;         // User switch with a pull-up resistor
-const int donePin =       D6;         // Pin the Electron uses to "pet" the watchdog
-const int blueLED =       D7;         // This LED is on the Electron itself
+const int tmp36Pin =      A0;                     // Simple Analog temperature sensor
+const int wakeUpPin =     A7;                     // This is the Particle Electron WKP pin
+const int enablePin =     B4;                     // Hold low to power down the device - for GPS Equipped units
+const int tmp36Shutdwn =  B5;                     // Can turn off the TMP-36 to save energy
+const int intPin =        D3;                     // PIR Sensor Interrupt pin
+const int hardResetPin =  D4;                     // Power Cycles the Electron and the Carrier Board
+const int userSwitch =    D5;                     // User switch with a pull-up resistor
+const int donePin =       D6;                     // Pin the Electron uses to "pet" the watchdog
+const int blueLED =       D7;                     // This LED is on the Electron itself
 
 // Timing Variables
-unsigned long stayAwake = 90000;                    // Long interval timing
-unsigned long webhookWait = 45000;
-unsigned long resetWait = 30000;
-unsigned long stayAwakeTimeStamp = 0;                  // Starts the timeframe
+unsigned long stayAwake = 90000;                  // In lowPowerMode, how long to stay awake every hour
+unsigned long webhookWait = 45000;                // How long will we wair for a WebHook response
+unsigned long resetWait = 30000;                  // How long will we wait in ERROR_STATE until reset
+unsigned long stayAwakeTimeStamp = 0;             // Timestamps for our timing variables
 unsigned long webhookTimeStamp = 0;
 unsigned long resetTimeStamp = 0;
-unsigned long publishTimeStamp = 0;                 // Keep track of when we publish a webhook
-bool readyForBed = false;
+unsigned long publishTimeStamp = 0;               // Keep track of when we publish a webhook
 
 // Program Variables
 int temperatureF;                                   // Global variable so we can monitor via cloud variable
 int resetCount;                                     // Counts the number of times the Electron has had a pin reset
 bool ledState = LOW;                                // variable used to store the last LED status, to toggle the light
+bool readyForBed = false;                           // Checks to see if steps for sleep have been completed
 bool pettingEnabled = true;                         // Let's us pet the hardware watchdog
+bool dataInFlight = false;                          // Tracks if we have sent data but not yet cleared it from counts until we get confirmation
 const char* releaseNumber = SOFTWARERELEASENUMBER;  // Displays the release on the menu
 byte controlRegister;                               // Stores the control register values
 bool lowPowerMode;                                  // Flag for Low Power Mode operations
-int lowBattLimit;                                   // Trigger for Low Batt State
 bool solarPowerMode;                                // Changes the PMIC settings
 bool verboseMode;                                   // Enables more active communications for configutation and setup
-retained char Signal[17];                           // Used to communicate Wireless RSSI and Description
+retained char SignalString[17];                           // Used to communicate Wireless RSSI and Description
 const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 
-// FRAM and Unix time variables
-time_t t;
-int openTime;
-int closeTime;
-byte lastHour = 0;                          // For recording the startup values
-byte lastDate = 0;                          // These values make sure we record events if time has lapsed
-int hourlyDurationSeconds = 0;              // This is where we count the duration seconds which are defined by the value of granularity
-int hourlyDurationSecondsSent = 0;          // Keep track of counts in flight
-int hourlyPersonCount = 0;                  // hourly counter
-int hourlyPersonCountSent = 0;              // Person count in flight to Ubidots
-int dailyPersonCount = 0;                   // daily counter
-bool dataInFlight = false;                  // Tracks if we have sent data but not yet cleared it from counts until we get confirmation
-int averageHourlyDuration = 0;              // Running average duration value
-byte currentHourlyPeriod;                   // This is where we will know if the period changed
-byte currentDailyPeriod;                    // We will keep daily counts as well as period counts
+// Time Related Variables
+time_t t;                                           // Global time vairable
+int openTime;                                       // Park Opening time - (24 hr format) sets waking
+int closeTime;                                      // Park Closing time - (24 hr format) sets sleep
+byte lastHour = 0;                                  // For recording the startup values
+byte lastDate = 0;                                  // These values make sure we record events if time has lapsed
+byte currentHourlyPeriod;                           // This is where we will know if the period changed
+byte currentDailyPeriod;                            // We will keep daily counts as well as period counts
 
+// Battery monitoring
+int stateOfCharge = 0;                              // Stores battery charge level value
+int lowBattLimit;                                   // Trigger for Low Batt State
+
+// This section is where we will initialize sensor specific variables, libraries and function prototypes
 // PIR Sensor variables
 volatile bool sensorDetect = false;         // This is the flag that an interrupt is triggered
 volatile time_t currentEvent = 0;           // Time for the current sensor event
 time_t lastEvent = 0;                       // When was the last sensor event
 time_t sessionStart = 0;                    // When did the current session session start
 int keepSession;                            // The value of the time we will keep a session alive - in seconds
+int hourlyDurationSeconds = 0;              // This is where we count the duration seconds which are defined by the value of granularity
+int hourlyDurationSecondsSent = 0;          // Keep track of counts in flight
+int hourlyPersonCount = 0;                  // hourly counter
+int hourlyPersonCountSent = 0;              // Person count in flight to Ubidots
+int dailyPersonCount = 0;                   // daily counter
+int averageHourlyDuration = 0;              // Running average duration value
 
-// Battery monitor
-int stateOfCharge = 0;                      // stores battery charge level value
 
 void setup()                                // Note: Disconnected Setup()
 {
+  Wire.begin();                             // Create a waire object
+
   pinMode(enablePin,OUTPUT);                // For GPS enabled units
   digitalWrite(enablePin,LOW);              // Turn off GPS to save battery
-  pinMode(intPin,INPUT);                    // PIR Sensor Interrupt pin
+  pinMode(intPin,INPUT_PULLUP);             // PIR Sensor Interrupt pin
   pinMode(wakeUpPin,INPUT);                 // This pin is active HIGH
   pinMode(userSwitch,INPUT);                // Momentary contact button on board for direct user input
   pinMode(blueLED, OUTPUT);                 // declare the Blue LED Pin as an output
@@ -147,7 +151,7 @@ void setup()                                // Note: Disconnected Setup()
   Particle.variable("HourlyCount", hourlyPersonCount);                // Define my Particle variables
   Particle.variable("DailyCount", dailyPersonCount);                  // Note: Don't have to be connected for any of this!!!
   Particle.variable("keepSession",keepSession);
-  Particle.variable("Signal", Signal);
+  Particle.variable("Signal", SignalString);
   Particle.variable("ResetCount", resetCount);
   Particle.variable("Release",releaseNumber);
   Particle.variable("stateOfChg", stateOfCharge);
@@ -163,9 +167,10 @@ void setup()                                // Note: Disconnected Setup()
   Particle.function("LowPowerMode",setLowPowerMode);
   Particle.function("Solar-Mode",setSolarMode);
   Particle.function("Verbose-Mode",setVerboseMode);
-  Particle.function("Set-Timezone",setTimeZone);
-  Particle.function("Set-OpenTime",setOpenTime);
-  Particle.function("Set-Close",setCloseTime);
+  Particle.function("SetTimeZone",setTimeZone);
+  Particle.function("SetOpenTime",setOpenTime);
+  Particle.function("SetClose",setCloseTime);
+
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
     resetTimeStamp = millis();
@@ -190,6 +195,10 @@ void setup()                                // Note: Disconnected Setup()
   {
     resetCount++;
     FRAMwrite8(RESETCOUNT,static_cast<uint8_t>(resetCount));            // If so, store incremented number - watchdog must have done This
+  }
+  if (resetCount >=6) {                                                 // If we get to resetCount 4, we are resetting without entering the main loop
+    FRAMwrite8(RESETCOUNT,4);                                            // The hope here is to get to the main loop and report a value of 4 which will indicate this issue is occuring
+    fullModemReset();                                                   // This will reset the modem and the device will reboot
   }
 
   // Here we load the values from FRAM
@@ -304,20 +313,20 @@ void loop()
     } break;
 
   case REPORTING_STATE: {                                               // Reporting - hourly or on command
-    watchdogISR();                                                      // Pet the watchdog once an hour
-    pettingEnabled = false;                                             // Going to see the reporting process through before petting again
-    if (!Particle.connected()) {
-      if (!connectToParticle()) {
-        resetTimeStamp = millis();
-        state = ERROR_STATE;
-        break;
+      watchdogISR();                                                      // Pet the watchdog once an hour
+      pettingEnabled = false;                                             // Going to see the reporting process through before petting again
+      if (!Particle.connected()) {
+        if (!connectToParticle()) {
+          resetTimeStamp = millis();
+          state = ERROR_STATE;
+          break;
+        }
       }
-    }
-    takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
-    sendEvent();                                                        // Send data to Ubidots
-    webhookTimeStamp = millis();
-    if (verboseMode) Particle.publish("State","Waiting for Response");
-    state = RESP_WAIT_STATE;                                            // Wait for Response
+      takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
+      sendEvent();                                                        // Send data to Ubidots
+      webhookTimeStamp = millis();
+      if (verboseMode) Particle.publish("State","Waiting for Response");
+      state = RESP_WAIT_STATE;                                            // Wait for Response
     } break;
 
   case RESP_WAIT_STATE:
@@ -342,8 +351,8 @@ void loop()
       delay(2000);                                          // This makes sure it goes through before reset
       if (resetCount <= 3)  System.reset();                 // Today, only way out is reset
       else {
-        FRAMwrite8(RESETCOUNT,0);                           // Time for a hard reset
-        digitalWrite(hardResetPin,HIGH);                    // Zero the count so only every three
+        FRAMwrite8(RESETCOUNT,0);                           // Zero the ResetCount
+        fullModemReset();                                   // Full Modem reset and reboot
       }
     }
     break;
@@ -438,7 +447,7 @@ void getSignalStrength()
     CellularSignal sig = Cellular.RSSI();  // Prototype for Cellular Signal Montoring
     int rssi = sig.rssi;
     int strength = map(rssi, -131, -51, 0, 5);
-    snprintf(Signal,17, "%s: %d", levels[strength], rssi);
+    snprintf(SignalString,17, "%s: %d", levels[strength], rssi);
 }
 
 int getTemperature()
@@ -519,11 +528,9 @@ void PMICreset() {
   }
 }
 
-
-/* These are the particle functions that allow you to configure and run the device
- * They are intended to allow for customization and control during installations
- * and to allow for management.
-*/
+// These are the particle functions that allow you to configure and run the device
+// They are intended to allow for customization and control during installations
+// and to allow for management.
 
 int resetFRAM(String command)   // Will reset the local counts
 {
@@ -727,4 +734,19 @@ void printFRAMContents()                // Prints out the inidividual event valu
     digitalWrite(blueLED,LOW);
     delay(500);
   }
+}
+
+void fullModemReset() {  // Adapted form Rikkas7's https://github.com/rickkas7/electronsample
+
+	Particle.disconnect(); 	                                         // Disconnect from the cloud
+	unsigned long startTime = millis();  	                           // Wait up to 15 seconds to disconnect
+	while(Particle.connected() && millis() - startTime < 15000) {
+		delay(100);
+	}
+	// Reset the modem and SIM card
+	// 16:MT silent reset (with detach from network and saving of NVM parameters), with reset of the SIM card
+	Cellular.command(30000, "AT+CFUN=16\r\n");
+	delay(1000);
+	// Go into deep sleep for 10 seconds to try to reset everything. This turns off the modem as well.
+	System.sleep(SLEEP_MODE_DEEP, 10);
 }
