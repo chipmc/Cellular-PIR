@@ -75,7 +75,7 @@ const int donePin =       D6;                     // Pin the Electron uses to "p
 const int blueLED =       D7;                     // This LED is on the Electron itself
 
 // Timing Variables
-unsigned long stayAwake = 90000;                  // In lowPowerMode, how long to stay awake every hour
+unsigned long stayAwake = 300000;                  // In lowPowerMode, how long to stay awake every hour
 unsigned long webhookWait = 45000;                // How long will we wair for a WebHook response
 unsigned long resetWait = 30000;                  // How long will we wait in ERROR_STATE until reset
 unsigned long stayAwakeTimeStamp = 0;             // Timestamps for our timing variables
