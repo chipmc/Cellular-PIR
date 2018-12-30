@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.78"
+#define SOFTWARERELEASENUMBER "0.79"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -88,7 +88,6 @@ int temperatureF;                                   // Global variable so we can
 int resetCount;                                     // Counts the number of times the Electron has had a pin reset
 bool ledState = LOW;                                // variable used to store the last LED status, to toggle the light
 bool readyForBed = false;                           // Checks to see if steps for sleep have been completed
-bool pettingEnabled = true;                         // Let's us pet the hardware watchdog
 bool dataInFlight = false;                          // Tracks if we have sent data but not yet cleared it from counts until we get confirmation
 const char* releaseNumber = SOFTWARERELEASENUMBER;  // Displays the release on the menu
 byte controlRegister;                               // Stores the control register values
@@ -115,6 +114,7 @@ int lowBattLimit;                                   // Trigger for Low Batt Stat
 // PIR Sensor variables
 volatile bool sensorDetect = false;         // This is the flag that an interrupt is triggered
 volatile time_t currentEvent = 0;           // Time for the current sensor event
+volatile bool watchdogFlag = false;
 time_t lastEvent = 0;                       // When was the last sensor event
 time_t sessionStart = 0;                    // When did the current session session start
 int keepSession;                            // The value of the time we will keep a session alive - in seconds
@@ -141,7 +141,7 @@ void setup()                                // Note: Disconnected Setup()
   pinMode(donePin,OUTPUT);                  // Allows us to pet the watchdog
   pinMode(hardResetPin,OUTPUT);             // For a hard reset active HIGH
 
-  watchdogISR();                            // Pet the watchdog
+  petWatchdog();                            // Pet the watchdog
 
   char responseTopic[125];
   String deviceID = System.deviceID();                                // Multiple Electrons share the same hook - keeps things straight
@@ -253,6 +253,7 @@ void loop()
       hourlyPersonCountSent = hourlyDurationSecondsSent = 0;            // Reset for next time
     }
     if (sensorDetect) recordCount();                                    // The ISR had raised the sensor flag
+    if (watchdogFlag) petWatchdog();
     if (lowPowerMode && (millis() > stayAwakeTimeStamp + stayAwake)) state = NAPPING_STATE;
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;    // We want to report on the hour but not after bedtime
     if ((Time.hour() >= closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;   // The park is closed, time to sleep
@@ -278,7 +279,7 @@ void loop()
       ledState = false;
       digitalWrite(blueLED,LOW);                                        // Turn off the LED
       digitalWrite(tmp36Shutdwn, LOW);                                  // Turns off the temp sensor
-      watchdogISR();                                                    // Pet the watchdog
+      petWatchdog();                                                    // Pet the watchdog
       readyForBed = true;                                               // Set the flag for the night
     }
     int secondsToHour = (60*(60 - Time.minute()));                      // Time till the top of the hour
@@ -293,7 +294,7 @@ void loop()
       }
       ledState = false;                                                 // Turn out the light
       digitalWrite(blueLED,LOW);                                        // Turn off the LED
-      watchdogISR();                                                    // Pet the watchdog
+      petWatchdog();                                                    // Pet the watchdog
       int secondsToHour = (60*(60 - Time.minute()));                    // Time till the top of the hour
       System.sleep(intPin, RISING, secondsToHour);                      // Sensor will wake us with an interrupt or timeout at the hour
       state = IDLE_STATE;                                               // Back to the IDLE_STATE after a nap
@@ -314,7 +315,6 @@ void loop()
 
   case REPORTING_STATE: {                                               // Reporting - hourly or on command
       watchdogISR();                                                      // Pet the watchdog once an hour
-      pettingEnabled = false;                                             // Going to see the reporting process through before petting again
       if (!Particle.connected()) {
         if (!connectToParticle()) {
           resetTimeStamp = millis();
@@ -333,7 +333,6 @@ void loop()
     if (!dataInFlight)                                                  // Response received back to IDLE state
     {
       state = IDLE_STATE;
-      pettingEnabled = true;                                            // Enable petting before going back into the loop
       stayAwakeTimeStamp = millis();
       if (verboseMode) Particle.publish("State","Idle");
     }
@@ -470,42 +469,35 @@ void sensorISR()
 
 void watchdogISR()
 {
-  if (pettingEnabled) {
-    digitalWrite(donePin, HIGH);                      // Pet the watchdog
-    digitalWrite(donePin, LOW);
-  }
+  watchdogFlag = true;
+}
+
+void petWatchdog()
+{
+  digitalWrite(donePin, HIGH);                      // Pet the watchdog
+  digitalWrite(donePin, LOW);
+  watchdogFlag = false;
 }
 
 // These functions control the connection and disconnection from Particle
 
 bool connectToParticle()
 {
-  if (!Cellular.ready())
-  {
-    Cellular.on();                                           // turn on the Modem
-    Cellular.connect();                                      // Connect to the cellular network
-    if(!waitFor(Cellular.ready,90000)) return false;         // Connect to cellular - give it 90 seconds
-  }
-  Particle.process();
-  Particle.connect();                                      // Connect to Particle
-  if(!waitFor(Particle.connected,30000)) return false;     // Connect to Particle - give it 30 seconds
+  Cellular.on();
+  Particle.connect();
+  if(!waitFor(Particle.connected,60000)) return false;
   Particle.process();
   return true;
 }
 
 bool disconnectFromParticle()
 {
-  Particle.disconnect();                                   // Disconnect from Particle in prep for sleep
-  waitFor(notConnected,10000);
-  Cellular.disconnect();                                   // Disconnect from the cellular network
-  delay(3000);
-  Cellular.off();                                           // Turn off the cellular modem
+  Particle.disconnect();                                          // Otherwise Electron will attempt to reconnect on wake
+  Cellular.off();
+  delay(1000);                                                    // Bummer but only should happen once an hour
   return true;
 }
 
-bool notConnected() {
-  return !Particle.connected();                             // This is a requirement to use waitFor
-}
 
 // Power Management function
 
@@ -599,7 +591,7 @@ int setSolarMode(String command) // Function to force sending data in current ho
   if (command == "1")
   {
     solarPowerMode = true;
-    FRAMread8(CONTROLREGISTER);
+    controlRegister = FRAMread8(CONTROLREGISTER);
     controlRegister = (0b00000100 | controlRegister);          // Turn on solarPowerMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);               // Write it to the register
     PMICreset();                                               // Change the power management Settings
@@ -609,7 +601,7 @@ int setSolarMode(String command) // Function to force sending data in current ho
   else if (command == "0")
   {
     solarPowerMode = false;
-    FRAMread8(CONTROLREGISTER);
+    controlRegister = FRAMread8(CONTROLREGISTER);
     controlRegister = (0b11111011 & controlRegister);           // Turn off solarPowerMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);                // Write it to the register
     PMICreset();                                                // Change the power management settings
@@ -624,7 +616,7 @@ int setVerboseMode(String command) // Function to force sending data in current 
   if (command == "1")
   {
     verboseMode = true;
-    FRAMread8(CONTROLREGISTER);
+    controlRegister = FRAMread8(CONTROLREGISTER);
     controlRegister = (0b00001000 | controlRegister);                    // Turn on verboseMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
     Particle.publish("Mode","Set Verbose Mode");
@@ -633,7 +625,7 @@ int setVerboseMode(String command) // Function to force sending data in current 
   else if (command == "0")
   {
     verboseMode = false;
-    FRAMread8(CONTROLREGISTER);
+    controlRegister = FRAMread8(CONTROLREGISTER);
     controlRegister = (0b11110111 & controlRegister);                    // Turn off verboseMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
     Particle.publish("Mode","Cleared Verbose Mode");
