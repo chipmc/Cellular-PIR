@@ -45,7 +45,7 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.79"
+#define SOFTWARERELEASENUMBER "0.81"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
@@ -75,13 +75,17 @@ const int donePin =       D6;                     // Pin the Electron uses to "p
 const int blueLED =       D7;                     // This LED is on the Electron itself
 
 // Timing Variables
-unsigned long stayAwake = 300000;                  // In lowPowerMode, how long to stay awake every hour
+const int wakeBoundary = 1*3600 + 0*60 + 0;         // 1 hour 0 minutes 0 seconds
+const int publishFrequency = 1000;                  // We can only publish once a second
+unsigned long stayAwake = 300000;                 // In lowPowerMode, how long to stay awake every hour
 unsigned long webhookWait = 45000;                // How long will we wair for a WebHook response
 unsigned long resetWait = 30000;                  // How long will we wait in ERROR_STATE until reset
 unsigned long stayAwakeTimeStamp = 0;             // Timestamps for our timing variables
 unsigned long webhookTimeStamp = 0;
 unsigned long resetTimeStamp = 0;
-unsigned long publishTimeStamp = 0;               // Keep track of when we publish a webhook
+unsigned long lastPublish = 0;               // Keep track of when we publish a webhook
+
+
 
 // Program Variables
 int temperatureF;                                   // Global variable so we can monitor via cloud variable
@@ -268,6 +272,11 @@ void loop()
         break;
       }
       if (Particle.connected()) {
+        if (verboseMode) {
+          Particle.publish("State","Disconnecting from Particle - Sleep");
+          waitUntil(meterParticlePublish);
+          lastPublish = millis();
+        }
         disconnectFromParticle();                                       // If connected, we need to disconned and power down the modem
       }
       detachInterrupt(intPin);                                          // Done sensing for the day
@@ -282,35 +291,42 @@ void loop()
       petWatchdog();                                                    // Pet the watchdog
       readyForBed = true;                                               // Set the flag for the night
     }
-    int secondsToHour = (60*(60 - Time.minute()));                      // Time till the top of the hour
-    System.sleep(SLEEP_MODE_SOFTPOWEROFF,secondsToHour);                // Very deep sleep till the next hour - then resets
+    int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
+    System.sleep(SLEEP_MODE_DEEP,wakeInSeconds);                      // Very deep sleep till the next hour - then resets
     } break;
 
   case NAPPING_STATE: {                                                 // This state puts the device in low power mode quickly
       if (Particle.connected())
       {
-        Particle.publish("State","Disconnecting from Particle");
+        if (verboseMode) {
+          Particle.publish("State","Disconnecting from Particle - Nap");
+          waitUntil(meterParticlePublish);
+          lastPublish = millis();
+        }
         disconnectFromParticle();                                       // If connected, we need to disconned and power down the modem
       }
       ledState = false;                                                 // Turn out the light
       digitalWrite(blueLED,LOW);                                        // Turn off the LED
-      petWatchdog();                                                    // Pet the watchdog
-      int secondsToHour = (60*(60 - Time.minute()));                    // Time till the top of the hour
-      System.sleep(intPin, RISING, secondsToHour);                      // Sensor will wake us with an interrupt or timeout at the hour
+      int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
+      petWatchdog();                                                    // Reset the watchdog
+      System.sleep(intPin, RISING, wakeInSeconds);                      // Sensor will wake us with an interrupt or timeout at the hour
       state = IDLE_STATE;                                               // Back to the IDLE_STATE after a nap
     } break;
 
   case LOW_BATTERY_STATE: {                                             // Sleep state but leaves the fuel gauge on
       if (Particle.connected()) {
+        Particle.publish("State","Disconnecting from Particle - Low Power");
+        waitUntil(meterParticlePublish);
+        lastPublish = millis();
         disconnectFromParticle();                                       // If connected, we need to disconned and power down the modem
       }
       detachInterrupt(intPin);                                          // Done sensing for the day
       ledState = false;
       digitalWrite(blueLED,LOW);                                        // Turn off the LED
       digitalWrite(tmp36Shutdwn, LOW);                                  // Turns off the temp sensor
-      watchdogISR();                                       // Pet the watchdog
-      int secondsToHour = (60*(60 - Time.minute()));                    // Time till the top of the hour
-      System.sleep(SLEEP_MODE_DEEP,secondsToHour);                      // Very deep sleep till the next hour - then resets
+      int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
+      petWatchdog();
+      System.sleep(SLEEP_MODE_DEEP,wakeInSeconds);                      // Very deep sleep till the next hour - then resets
     } break;
 
   case REPORTING_STATE: {                                               // Reporting - hourly or on command
@@ -325,7 +341,11 @@ void loop()
       takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
       sendEvent();                                                        // Send data to Ubidots
       webhookTimeStamp = millis();
-      if (verboseMode) Particle.publish("State","Waiting for Response");
+      if (verboseMode) {
+        Particle.publish("State","Waiting for Response");
+        waitUntil(meterParticlePublish);
+        lastPublish = millis();
+      }
       state = RESP_WAIT_STATE;                                            // Wait for Response
     } break;
 
@@ -336,15 +356,15 @@ void loop()
       stayAwakeTimeStamp = millis();
       if (verboseMode) Particle.publish("State","Idle");
     }
-    else if (millis() > webhookTimeStamp + webhookWait) {               // If it takes too long - will need to reset
-      resetTimeStamp = millis();
+    else if (millis() - webhookTimeStamp > webhookWait) {               // If it takes too long - will need to reset
       state = ERROR_STATE;                                              // Response timed out
+      resetTimeStamp = millis();
       Particle.publish("State","Response Timeout Error");
     }
     break;
 
   case ERROR_STATE:                                          // To be enhanced - where we deal with errors
-    if (millis() > resetTimeStamp + resetWait)
+    if (millis() - resetTimeStamp > resetWait)
     {
       Particle.publish("State","ERROR_STATE - Resetting");
       delay(2000);                                          // This makes sure it goes through before reset
@@ -695,6 +715,12 @@ int setLowPowerMode(String command)                                   // This is
   }
   FRAMwrite8(CONTROLREGISTER,controlRegister);                         // Write to the control register
   return 1;
+}
+
+bool meterParticlePublish(void)
+{
+  if(millis() - lastPublish >= publishFrequency) return 1;
+  else return 0;
 }
 
 /* Finally there is a special mode that can be accessed by pressing the user button at startup
