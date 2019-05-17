@@ -387,7 +387,7 @@ int sendNow(String command) // Function to force sending data in current hour
   else return 0;
 }
  8080196:	bd08      	pop	{r3, pc}
- 8080198:	08085d1d 	.word	0x08085d1d
+ 8080198:	08085b4a 	.word	0x08085b4a
  808019c:	20000520 	.word	0x20000520
 
 080801a0 <_Z12hardResetNow6String>:
@@ -414,7 +414,7 @@ int hardResetNow(String command)   // Will perform a hard reset on the Electron
 }
  80801b4:	bd08      	pop	{r3, pc}
  80801b6:	bf00      	nop
- 80801b8:	08085d1d 	.word	0x08085d1d
+ 80801b8:	08085b4a 	.word	0x08085b4a
 
 080801bc <_ZN10CloudClass7publishEPKcS1_N8particle5FlagsI15PublishFlagTypehEES5_.isra.16.constprop.21>:
     inline particle::Future<bool> publish(const char *eventName, PublishFlags flags1, PublishFlags flags2 = PublishFlags())
@@ -606,7 +606,7 @@ int resetCounts(String command)   // Resets the current hourly and daily counts
   else return 0;
 }
  808028a:	bd08      	pop	{r3, pc}
- 808028c:	08085d1d 	.word	0x08085d1d
+ 808028c:	08085b4a 	.word	0x08085b4a
  8080290:	20000534 	.word	0x20000534
  8080294:	200004fc 	.word	0x200004fc
  8080298:	20000528 	.word	0x20000528
@@ -1526,7 +1526,7 @@ void ResetFRAM()  // This will reset the FRAM - set the version and preserve del
  808079c:	b005      	add	sp, #20
  808079e:	bd30      	pop	{r4, r5, pc}
  80807a0:	20000500 	.word	0x20000500
- 80807a4:	08085a8f 	.word	0x08085a8f
+ 80807a4:	08085a91 	.word	0x08085a91
  80807a8:	0808580b 	.word	0x0808580b
  80807ac:	08085821 	.word	0x08085821
  80807b0:	0808582a 	.word	0x0808582a
@@ -1555,7 +1555,7 @@ int resetFRAM(String command)   // Will reset the local counts
 }
  80807cc:	bd08      	pop	{r3, pc}
  80807ce:	bf00      	nop
- 80807d0:	08085d1d 	.word	0x08085d1d
+ 80807d0:	08085b4a 	.word	0x08085b4a
 
 080807d4 <_Z11recordCountv>:
   Particle.process();
@@ -1833,10 +1833,10 @@ void recordCount()                                          // Handles counting 
  808095c:	08085841 	.word	0x08085841
  8080960:	2000055c 	.word	0x2000055c
  8080964:	20000500 	.word	0x20000500
- 8080968:	08085a59 	.word	0x08085a59
+ 8080968:	08085a5b 	.word	0x08085a5b
  808096c:	20000556 	.word	0x20000556
  8080970:	0808585f 	.word	0x0808585f
- 8080974:	080859b6 	.word	0x080859b6
+ 8080974:	080859b8 	.word	0x080859b8
  8080978:	200005be 	.word	0x200005be
 
 0808097c <_Z9sendEventv>:
@@ -2874,14 +2874,14 @@ int setSolarMode(String command) // Function to force sending data in current ho
  8080f6a:	b005      	add	sp, #20
  8080f6c:	bd30      	pop	{r4, r5, pc}
  8080f6e:	bf00      	nop
- 8080f70:	08085d1d 	.word	0x08085d1d
+ 8080f70:	08085b4a 	.word	0x08085b4a
  8080f74:	200005bc 	.word	0x200005bc
  8080f78:	200005be 	.word	0x200005be
  8080f7c:	20000500 	.word	0x20000500
  8080f80:	08085989 	.word	0x08085989
- 8080f84:	08085b48 	.word	0x08085b48
- 8080f88:	080859a0 	.word	0x080859a0
- 8080f8c:	080859b6 	.word	0x080859b6
+ 8080f84:	080859a0 	.word	0x080859a0
+ 8080f88:	080859a2 	.word	0x080859a2
+ 8080f8c:	080859b8 	.word	0x080859b8
 
 08080f90 <_Z14setVerboseMode6String>:
 
@@ -2985,14 +2985,14 @@ int setVerboseMode(String command) // Function to force sending data in current 
  8081006:	b005      	add	sp, #20
  8081008:	bd30      	pop	{r4, r5, pc}
  808100a:	bf00      	nop
- 808100c:	08085d1d 	.word	0x08085d1d
+ 808100c:	08085b4a 	.word	0x08085b4a
  8081010:	2000055c 	.word	0x2000055c
  8081014:	200005be 	.word	0x200005be
  8081018:	20000500 	.word	0x20000500
- 808101c:	080859bb 	.word	0x080859bb
- 8081020:	08085b48 	.word	0x08085b48
- 8081024:	080859cc 	.word	0x080859cc
- 8081028:	080859b6 	.word	0x080859b6
+ 808101c:	080859bd 	.word	0x080859bd
+ 8081020:	080859a0 	.word	0x080859a0
+ 8081024:	080859ce 	.word	0x080859ce
+ 8081028:	080859b8 	.word	0x080859b8
 
 0808102c <_Z11setTimeZone6String>:
 
@@ -3107,8 +3107,8 @@ int setTimeZone(String command)
  80810c2:	bd70      	pop	{r4, r5, r6, pc}
  80810c4:	20000508 	.word	0x20000508
  80810c8:	20000500 	.word	0x20000500
- 80810cc:	080859e1 	.word	0x080859e1
- 80810d0:	08085a84 	.word	0x08085a84
+ 80810cc:	080859e3 	.word	0x080859e3
+ 80810d0:	08085a86 	.word	0x08085a86
 
 080810d4 <_Z11setOpenTime6String>:
 
@@ -3176,9 +3176,9 @@ int setOpenTime(String command)
  8081120:	b046      	add	sp, #280	; 0x118
  8081122:	bd10      	pop	{r4, pc}
  8081124:	200005b0 	.word	0x200005b0
- 8081128:	080859f5 	.word	0x080859f5
+ 8081128:	080859f7 	.word	0x080859f7
  808112c:	20000500 	.word	0x20000500
- 8081130:	08085a84 	.word	0x08085a84
+ 8081130:	08085a86 	.word	0x08085a86
 
 08081134 <_Z12setCloseTime6String>:
 
@@ -3246,9 +3246,9 @@ int setCloseTime(String command)
  8081180:	b046      	add	sp, #280	; 0x118
  8081182:	bd10      	pop	{r4, pc}
  8081184:	20000558 	.word	0x20000558
- 8081188:	08085a09 	.word	0x08085a09
+ 8081188:	08085a0b 	.word	0x08085a0b
  808118c:	20000500 	.word	0x20000500
- 8081190:	08085a84 	.word	0x08085a84
+ 8081190:	08085a86 	.word	0x08085a86
 
 08081194 <_Z15setLowPowerMode6String>:
 
@@ -3347,12 +3347,12 @@ int setLowPowerMode(String command)                                   // This is
 }
  8081224:	b004      	add	sp, #16
  8081226:	bd70      	pop	{r4, r5, r6, pc}
- 8081228:	08085d1d 	.word	0x08085d1d
- 808122c:	08085b48 	.word	0x08085b48
+ 8081228:	08085b4a 	.word	0x08085b4a
+ 808122c:	080859a0 	.word	0x080859a0
  8081230:	200005be 	.word	0x200005be
  8081234:	20000500 	.word	0x20000500
- 8081238:	080859b6 	.word	0x080859b6
- 808123c:	08085a20 	.word	0x08085a20
+ 8081238:	080859b8 	.word	0x080859b8
+ 808123c:	08085a22 	.word	0x08085a22
  8081240:	20000556 	.word	0x20000556
  8081244:	0808585f 	.word	0x0808585f
 
@@ -3881,47 +3881,47 @@ void setup()                                // Note: Disconnected Setup()
  8081556:	e7b0      	b.n	80814ba <setup+0x25e>
  8081558:	08080de5 	.word	0x08080de5
  808155c:	20000528 	.word	0x20000528
- 8081560:	08085a2a 	.word	0x08085a2a
+ 8081560:	08085a2c 	.word	0x08085a2c
  8081564:	200004ec 	.word	0x200004ec
- 8081568:	08085a36 	.word	0x08085a36
+ 8081568:	08085a38 	.word	0x08085a38
  808156c:	200005b8 	.word	0x200005b8
- 8081570:	08085a41 	.word	0x08085a41
+ 8081570:	08085a43 	.word	0x08085a43
  8081574:	2000056c 	.word	0x2000056c
- 8081578:	08085a4d 	.word	0x08085a4d
+ 8081578:	08085a4f 	.word	0x08085a4f
  808157c:	20000534 	.word	0x20000534
- 8081580:	08085a54 	.word	0x08085a54
+ 8081580:	08085a56 	.word	0x08085a56
  8081584:	20000404 	.word	0x20000404
- 8081588:	08085a5f 	.word	0x08085a5f
+ 8081588:	08085a61 	.word	0x08085a61
  808158c:	2000052c 	.word	0x2000052c
- 8081590:	08085a67 	.word	0x08085a67
+ 8081590:	08085a69 	.word	0x08085a69
  8081594:	20000556 	.word	0x20000556
- 8081598:	08085a72 	.word	0x08085a72
+ 8081598:	08085a74 	.word	0x08085a74
  808159c:	200005b0 	.word	0x200005b0
- 80815a0:	08085af5 	.word	0x08085af5
+ 80815a0:	08085af7 	.word	0x08085af7
  80815a4:	20000558 	.word	0x20000558
- 80815a8:	08085a7f 	.word	0x08085a7f
+ 80815a8:	08085a81 	.word	0x08085a81
  80815ac:	080807bd 	.word	0x080807bd
- 80815b0:	08085a89 	.word	0x08085a89
+ 80815b0:	08085a8b 	.word	0x08085a8b
  80815b4:	08080241 	.word	0x08080241
- 80815b8:	08085a94 	.word	0x08085a94
+ 80815b8:	08085a96 	.word	0x08085a96
  80815bc:	080801a1 	.word	0x080801a1
- 80815c0:	08085aa1 	.word	0x08085aa1
+ 80815c0:	08085aa3 	.word	0x08085aa3
  80815c4:	08080e7d 	.word	0x08080e7d
- 80815c8:	08085aac 	.word	0x08085aac
+ 80815c8:	08085aae 	.word	0x08085aae
  80815cc:	08080185 	.word	0x08080185
- 80815d0:	08085ab8 	.word	0x08085ab8
+ 80815d0:	08085aba 	.word	0x08085aba
  80815d4:	08081195 	.word	0x08081195
- 80815d8:	08085ac1 	.word	0x08085ac1
+ 80815d8:	08085ac3 	.word	0x08085ac3
  80815dc:	08080eed 	.word	0x08080eed
- 80815e0:	08085ace 	.word	0x08085ace
+ 80815e0:	08085ad0 	.word	0x08085ad0
  80815e4:	08080f91 	.word	0x08080f91
- 80815e8:	08085ad9 	.word	0x08085ad9
+ 80815e8:	08085adb 	.word	0x08085adb
  80815ec:	0808102d 	.word	0x0808102d
- 80815f0:	08085ae6 	.word	0x08085ae6
+ 80815f0:	08085ae8 	.word	0x08085ae8
  80815f4:	080810d5 	.word	0x080810d5
- 80815f8:	08085af2 	.word	0x08085af2
+ 80815f8:	08085af4 	.word	0x08085af4
  80815fc:	08081135 	.word	0x08081135
- 8081600:	08085afe 	.word	0x08085afe
+ 8081600:	08085b00 	.word	0x08085b00
  8081604:	20000538 	.word	0x20000538
  8081608:	200004f8 	.word	0x200004f8
  808160c:	20000520 	.word	0x20000520
@@ -4088,7 +4088,7 @@ ConnectionEvents connectionEvents("connEventStats");// Connection events object
  80816e4:	08082807 	.word	0x08082807
  80816e8:	20000538 	.word	0x20000538
  80816ec:	08082be9 	.word	0x08082be9
- 80816f0:	08085b07 	.word	0x08085b07
+ 80816f0:	08085b09 	.word	0x08085b09
  80816f4:	080817a5 	.word	0x080817a5
 
 080816f8 <_ZNSt14_Function_baseD1Ev>:
@@ -4537,10 +4537,10 @@ void ConnectionEvents::loop() {
  80818ca:	e8bd 83f0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, pc}
  80818ce:	bf00      	nop
  80818d0:	40024000 	.word	0x40024000
- 80818d4:	08085b4a 	.word	0x08085b4a
- 80818d8:	08085b59 	.word	0x08085b59
+ 80818d4:	08085b4c 	.word	0x08085b4c
+ 80818d8:	08085b5b 	.word	0x08085b5b
  80818dc:	20000700 	.word	0x20000700
- 80818e0:	08085b87 	.word	0x08085b87
+ 80818e0:	08085b89 	.word	0x08085b89
  80818e4:	200005d4 	.word	0x200005d4
 
 080818e8 <_ZN16ConnectionEvents3addEii>:
@@ -4644,9 +4644,9 @@ void ConnectionEvents::add(int eventCode, int data /* = 0 */) {
  8081940:	f7ff ff10 	bl	8081764 <_ZNK5spark6Logger4infoEPKcz>
  8081944:	e8bd 81f0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, pc}
  8081948:	40024000 	.word	0x40024000
- 808194c:	08085b96 	.word	0x08085b96
+ 808194c:	08085b98 	.word	0x08085b98
  8081950:	20000700 	.word	0x20000700
- 8081954:	08085bab 	.word	0x08085bab
+ 8081954:	08085bad 	.word	0x08085bad
 
 08081958 <_ZN16ConnectionEvents5setupEv>:
 }
@@ -4726,7 +4726,7 @@ void ConnectionEvents::setup() {
  80819a2:	bd70      	pop	{r4, r5, r6, pc}
  80819a4:	40024000 	.word	0x40024000
  80819a8:	5c39d416 	.word	0x5c39d416
- 80819ac:	08085bcc 	.word	0x08085bcc
+ 80819ac:	08085bce 	.word	0x08085bce
  80819b0:	20000700 	.word	0x20000700
 
 080819b4 <_GLOBAL__sub_I__ZN16ConnectionEvents19connectionEventDataE>:
@@ -15826,45 +15826,45 @@ SPIClass SPI2(HAL_SPI_INTERFACE3);
  8085964:	6c61 6575 2073 7261 3a65 6b20 6565 5370     alues are: keepS
  8085974:	7365 6973 6e6f 203a 6925 5600 7261 6169     ession: %i.Varia
  8085984:	6c62 7365 5300 7465 5320 6c6f 7261 5020     bles.Set Solar P
- 8085994:	776f 7265 6465 4d20 646f 0065 6c43 6165     owered Mode.Clea
- 80859a4:	6572 2064 6f53 616c 2072 6f50 6577 6572     red Solar Powere
- 80859b4:	2064 6f4d 6564 5300 7465 5620 7265 6f62     d Mode.Set Verbo
- 80859c4:	6573 4d20 646f 0065 6c43 6165 6572 2064     se Mode.Cleared 
- 80859d4:	6556 6272 736f 2065 6f4d 6564 5400 6d69     Verbose Mode.Tim
- 80859e4:	2065 6f7a 656e 6f20 6666 6573 2074 6925     e zone offset %i
- 80859f4:	4f00 6570 206e 6974 656d 7320 7465 7420     .Open time set t
- 8085a04:	206f 6925 4300 6f6c 6973 676e 7420 6d69     o %i.Closing tim
- 8085a14:	2065 6573 2074 6f74 2520 0069 6f4c 2077     e set to %i.Low 
- 8085a24:	6f50 6577 0072 6f48 7275 796c 6f43 6e75     Power.HourlyCoun
- 8085a34:	0074 6144 6c69 4379 756f 746e 6b00 6565     t.DailyCount.kee
- 8085a44:	5370 7365 6973 6e6f 5300 6769 616e 006c     pSession.Signal.
- 8085a54:	6552 6573 4374 756f 746e 5200 6c65 6165     ResetCount.Relea
- 8085a64:	6573 7300 6174 6574 664f 6843 0067 6f6c     se.stateOfChg.lo
- 8085a74:	5077 776f 7265 6f4d 6564 4300 6f6c 6573     wPowerMode.Close
- 8085a84:	6954 656d 5200 7365 7465 462d 4152 004d     Time.Reset-FRAM.
- 8085a94:	6552 6573 2d74 6f43 6e75 7374 4800 7261     Reset-Counts.Har
- 8085aa4:	2d64 6552 6573 0074 654b 7065 6553 7373     d-Reset.KeepSess
- 8085ab4:	6f69 006e 6553 646e 4e2d 776f 4c00 776f     ion.Send-Now.Low
- 8085ac4:	6f50 6577 4d72 646f 0065 6f53 616c 2d72     PowerMode.Solar-
- 8085ad4:	6f4d 6564 5600 7265 6f62 6573 4d2d 646f     Mode.Verbose-Mod
- 8085ae4:	0065 6553 5474 6d69 5a65 6e6f 0065 6553     e.SetTimeZone.Se
- 8085af4:	4f74 6570 546e 6d69 0065 6553 4374 6f6c     tOpenTime.SetClo
- 8085b04:	6573 6300 6e6f 456e 6576 746e 7453 7461     se.connEventStat
- 8085b14:	0073 6e55 6e6b 776f 006e 6f4e 656e 5700     s.Unknown.None.W
- 8085b24:	4669 0069 5347 004d 4d55 5354 4300 4d44     iFi.GSM.UMTS.CDM
- 8085b34:	0041 544c 0045 4549 4545 3038 3132 3435     A.LTE.IEEE802154
- 8085b44:	3000 382e 0030 6c25 2c75 6c25 2c75 6425     .0.80.%lu,%lu,%d
- 8085b54:	252c 3b64 6300 756f 646c 276e 2074 6573     ,%d;.couldn't se
- 8085b64:	646e 6120 6c6c 6520 6576 746e 2c73 7320     nd all events, s
- 8085b74:	7661 6e69 2067 6425 6620 726f 6c20 7461     aving %d for lat
- 8085b84:	7265 7300 6e65 2074 6425 6520 6576 746e     er.sent %d event
- 8085b94:	0073 6964 6373 7261 6964 676e 6f20 646c     s.discarding old
- 8085ba4:	6520 6576 746e 6300 6e6f 656e 7463 6f69      event.connectio
- 8085bb4:	456e 6576 746e 6520 6576 746e 253d 2064     nEvent event=%d 
- 8085bc4:	6164 6174 253d 0064 6e69 7469 6169 696c     data=%d.initiali
- 8085bd4:	697a 676e 6320 6e6f 656e 7463 6f69 206e     zing connection 
- 8085be4:	7665 6e65 2074 6572 6174 6e69 6465 6d20     event retained m
- 8085bf4:	6d65 726f 0079 0000                         emory...
+ 8085994:	776f 7265 6465 4d20 646f 0065 0030 6c43     owered Mode.0.Cl
+ 80859a4:	6165 6572 2064 6f53 616c 2072 6f50 6577     eared Solar Powe
+ 80859b4:	6572 2064 6f4d 6564 5300 7465 5620 7265     red Mode.Set Ver
+ 80859c4:	6f62 6573 4d20 646f 0065 6c43 6165 6572     bose Mode.Cleare
+ 80859d4:	2064 6556 6272 736f 2065 6f4d 6564 5400     d Verbose Mode.T
+ 80859e4:	6d69 2065 6f7a 656e 6f20 6666 6573 2074     ime zone offset 
+ 80859f4:	6925 4f00 6570 206e 6974 656d 7320 7465     %i.Open time set
+ 8085a04:	7420 206f 6925 4300 6f6c 6973 676e 7420      to %i.Closing t
+ 8085a14:	6d69 2065 6573 2074 6f74 2520 0069 6f4c     ime set to %i.Lo
+ 8085a24:	2077 6f50 6577 0072 6f48 7275 796c 6f43     w Power.HourlyCo
+ 8085a34:	6e75 0074 6144 6c69 4379 756f 746e 6b00     unt.DailyCount.k
+ 8085a44:	6565 5370 7365 6973 6e6f 5300 6769 616e     eepSession.Signa
+ 8085a54:	006c 6552 6573 4374 756f 746e 5200 6c65     l.ResetCount.Rel
+ 8085a64:	6165 6573 7300 6174 6574 664f 6843 0067     ease.stateOfChg.
+ 8085a74:	6f6c 5077 776f 7265 6f4d 6564 4300 6f6c     lowPowerMode.Clo
+ 8085a84:	6573 6954 656d 5200 7365 7465 462d 4152     seTime.Reset-FRA
+ 8085a94:	004d 6552 6573 2d74 6f43 6e75 7374 4800     M.Reset-Counts.H
+ 8085aa4:	7261 2d64 6552 6573 0074 654b 7065 6553     ard-Reset.KeepSe
+ 8085ab4:	7373 6f69 006e 6553 646e 4e2d 776f 4c00     ssion.Send-Now.L
+ 8085ac4:	776f 6f50 6577 4d72 646f 0065 6f53 616c     owPowerMode.Sola
+ 8085ad4:	2d72 6f4d 6564 5600 7265 6f62 6573 4d2d     r-Mode.Verbose-M
+ 8085ae4:	646f 0065 6553 5474 6d69 5a65 6e6f 0065     ode.SetTimeZone.
+ 8085af4:	6553 4f74 6570 546e 6d69 0065 6553 4374     SetOpenTime.SetC
+ 8085b04:	6f6c 6573 6300 6e6f 456e 6576 746e 7453     lose.connEventSt
+ 8085b14:	7461 0073 6e55 6e6b 776f 006e 6f4e 656e     ats.Unknown.None
+ 8085b24:	5700 4669 0069 5347 004d 4d55 5354 4300     .WiFi.GSM.UMTS.C
+ 8085b34:	4d44 0041 544c 0045 4549 4545 3038 3132     DMA.LTE.IEEE8021
+ 8085b44:	3435 3000 382e 0031 6c25 2c75 6c25 2c75     54.0.81.%lu,%lu,
+ 8085b54:	6425 252c 3b64 6300 756f 646c 276e 2074     %d,%d;.couldn't 
+ 8085b64:	6573 646e 6120 6c6c 6520 6576 746e 2c73     send all events,
+ 8085b74:	7320 7661 6e69 2067 6425 6620 726f 6c20      saving %d for l
+ 8085b84:	7461 7265 7300 6e65 2074 6425 6520 6576     ater.sent %d eve
+ 8085b94:	746e 0073 6964 6373 7261 6964 676e 6f20     nts.discarding o
+ 8085ba4:	646c 6520 6576 746e 6300 6e6f 656e 7463     ld event.connect
+ 8085bb4:	6f69 456e 6576 746e 6520 6576 746e 253d     ionEvent event=%
+ 8085bc4:	2064 6164 6174 253d 0064 6e69 7469 6169     d data=%d.initia
+ 8085bd4:	696c 697a 676e 6320 6e6f 656e 7463 6f69     lizing connectio
+ 8085be4:	206e 7665 6e65 2074 6572 6174 6e69 6465     n event retained
+ 8085bf4:	6d20 6d65 726f 0079                          memory.
 
 08085bfc <_ZTV16ConnectionEvents>:
 	...
