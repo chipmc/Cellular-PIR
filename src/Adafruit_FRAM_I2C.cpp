@@ -53,7 +53,7 @@ boolean Adafruit_FRAM_I2C::begin(uint8_t addr)
   i2c_addr = addr;
   Wire.begin();
 
-  /* Make sure we're actually connected */
+  /* Make sure we're actually connected
   uint16_t manufID, prodID;
   getDeviceID(&manufID, &prodID);
   if (manufID != 0x00A)
@@ -68,6 +68,7 @@ boolean Adafruit_FRAM_I2C::begin(uint8_t addr)
     //Serial.println(prodID, HEX);
     return false;
   }
+  */
 
   /* Everything seems to be properly initialised and connected */
   _framInitialised = true;

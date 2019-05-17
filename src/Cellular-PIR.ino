@@ -50,7 +50,7 @@
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
 #include "FRAM-Library-Extensions.h"  // Extends the FRAM Library
 #include "electrondoc.h"              // Documents pinout
-#include "ConnectionEvents.h"                       // Stores information on last connection attemt in memory
+#include "ConnectionEvents.h"         // Stores information on last connection attemt in memory
 
 
 // Prototypes and System Mode calls
@@ -295,7 +295,7 @@ void loop()
   case NAPPING_STATE: {                                                 // This state puts the device in low power mode quickly
       if (Particle.connected())
       {
-        Particle.publish("State","Disconnecting from Particle");
+        Particle.publish("State","Disconnecting from Particle", PRIVATE);
         disconnectFromParticle();                                       // If connected, we need to disconned and power down the modem
       }
       ledState = false;                                                 // Turn out the light
@@ -331,7 +331,7 @@ void loop()
       takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
       sendEvent();                                                        // Send data to Ubidots
       webhookTimeStamp = millis();
-      if (verboseMode) Particle.publish("State","Waiting for Response");
+      if (verboseMode) Particle.publish("State","Waiting for Response", PRIVATE);
       state = RESP_WAIT_STATE;                                            // Wait for Response
     } break;
 
@@ -340,19 +340,19 @@ void loop()
     {
       state = IDLE_STATE;
       stayAwakeTimeStamp = millis();
-      if (verboseMode) Particle.publish("State","Idle");
+      if (verboseMode) Particle.publish("State","Idle", PRIVATE);
     }
     else if (millis() > webhookTimeStamp + webhookWait) {               // If it takes too long - will need to reset
       resetTimeStamp = millis();
       state = ERROR_STATE;                                              // Response timed out
-      Particle.publish("State","Response Timeout Error");
+      Particle.publish("State","Response Timeout Error", PRIVATE);
     }
     break;
 
   case ERROR_STATE:                                          // To be enhanced - where we deal with errors
     if (millis() > resetTimeStamp + resetWait)
     {
-      Particle.publish("State","ERROR_STATE - Resetting");
+      Particle.publish("State","ERROR_STATE - Resetting", PRIVATE);
       delay(2000);                                          // This makes sure it goes through before reset
       if (resetCount <= 3)  System.reset();                 // Today, only way out is reset
       else {
@@ -393,7 +393,7 @@ void recordCount()                                          // Handles counting 
     digitalWrite(blueLED, ledState);                        // update the LED pin itself
     // Publish if ew are in verbose mode
     snprintf(data, sizeof(data), "New visit: %i, duration of %i",hourlyPersonCount,sessionLength);
-    if (verboseMode) Particle.publish("Count",data);
+    if (verboseMode) Particle.publish("Count",data, PRIVATE);
     // Reset the time values to start the next session
     lastEvent = currentEvent;
     sessionStart = currentEvent;
@@ -401,7 +401,7 @@ void recordCount()                                          // Handles counting 
   else lastEvent = currentEvent;                            // In this case, it is the same person who is loitering in the detection area
   if (!digitalRead(userSwitch)) {                           // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
     if (lowPowerMode) {
-      Particle.publish("Mode","Normal Operations");
+      Particle.publish("Mode","Normal Operations", PRIVATE);
       controlRegister = (0b1111110 & controlRegister);     // Will set the lowPowerMode bit to zero
       FRAMwrite8(CONTROLREGISTER,controlRegister);
       lowPowerMode = false;
@@ -429,16 +429,16 @@ void UbidotsHandler(const char *event, const char *data)  // Looks at the respon
   char dataCopy[strlen(data)+1];                                    // data needs to be copied since Particle.publish() will clear it
   strncpy(dataCopy, data, sizeof(dataCopy));            // Copy - overflow safe
   if (!strlen(dataCopy)) {                                      // First check to see if there is any data
-    Particle.publish("Ubidots Hook", "No Data");
+    Particle.publish("Ubidots Hook", "No Data", PRIVATE);
     return;
   }
   int responseCode = atoi(dataCopy);                    // Response is only a single number thanks to Template
   if ((responseCode == 200) || (responseCode == 201))
   {
-    Particle.publish("State","Response Received");
+    Particle.publish("State","Response Received", PRIVATE);
     dataInFlight = false;                                 // Data has been received
   }
-  else Particle.publish("Ubidots Hook", dataCopy);       // Publish the response code
+  else Particle.publish("Ubidots Hook", dataCopy, PRIVATE);       // Publish the response code
 }
 
 // These are the functions that are part of the takeMeasurements call
@@ -497,13 +497,15 @@ void petWatchdog()
 
 // These functions control the connection and disconnection from Particle
 
-bool connectToParticle()
-{
+bool connectToParticle() {
   Cellular.on();
   Particle.connect();
-  if(!waitFor(Particle.connected,60000)) return false;
-  Particle.process();
-  return true;
+  // wait for *up to* 5 minutes
+  for (int retry = 0; retry < 300 && !waitFor(Particle.connected,1000); retry++) {
+    Particle.process();
+  }
+  if (Particle.connected()) return 1;                               // Were able to connect successfully
+  else return 0;                                                    // Failed to connect
 }
 
 bool disconnectFromParticle()
@@ -588,7 +590,7 @@ int setKeepSession(String command)  // This is the amount of time in seconds we 
   FRAMwrite8(KEEPSESSION,tempKeepSession);
   keepSession = tempKeepSession;                   // keepSession - The time to keep a session alive - in seconds
   snprintf(data, sizeof(data), "Values are: keepSession: %i",keepSession);
-  if (verboseMode) Particle.publish("Variables",data);
+  if (verboseMode) Particle.publish("Variables",data, PRIVATE);
   return 1;
 }
 
@@ -611,7 +613,7 @@ int setSolarMode(String command) // Function to force sending data in current ho
     controlRegister = (0b00000100 | controlRegister);          // Turn on solarPowerMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);               // Write it to the register
     PMICreset();                                               // Change the power management Settings
-    Particle.publish("Mode","Set Solar Powered Mode");
+    Particle.publish("Mode","Set Solar Powered Mode", PRIVATE);
     return 1;
   }
   else if (command == "0")
@@ -621,7 +623,7 @@ int setSolarMode(String command) // Function to force sending data in current ho
     controlRegister = (0b11111011 & controlRegister);           // Turn off solarPowerMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);                // Write it to the register
     PMICreset();                                                // Change the power management settings
-    Particle.publish("Mode","Cleared Solar Powered Mode");
+    Particle.publish("Mode","Cleared Solar Powered Mode", PRIVATE);
     return 1;
   }
   else return 0;
@@ -635,7 +637,7 @@ int setVerboseMode(String command) // Function to force sending data in current 
     controlRegister = FRAMread8(CONTROLREGISTER);
     controlRegister = (0b00001000 | controlRegister);                    // Turn on verboseMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
-    Particle.publish("Mode","Set Verbose Mode");
+    Particle.publish("Mode","Set Verbose Mode", PRIVATE);
     return 1;
   }
   else if (command == "0")
@@ -644,7 +646,7 @@ int setVerboseMode(String command) // Function to force sending data in current 
     controlRegister = FRAMread8(CONTROLREGISTER);
     controlRegister = (0b11110111 & controlRegister);                    // Turn off verboseMode
     FRAMwrite8(CONTROLREGISTER,controlRegister);                        // Write it to the register
-    Particle.publish("Mode","Cleared Verbose Mode");
+    Particle.publish("Mode","Cleared Verbose Mode", PRIVATE);
     return 1;
   }
   else return 0;
@@ -660,9 +662,9 @@ int setTimeZone(String command)
   FRAMwrite8(TIMEZONE,tempTimeZoneOffset);                             // Store the new value in FRAMwrite8
   t = Time.now();
   snprintf(data, sizeof(data), "Time zone offset %i",tempTimeZoneOffset);
-  Particle.publish("Time",data);
+  Particle.publish("Time",data, PRIVATE);
   delay(1000);
-  Particle.publish("Time",Time.timeStr(t));
+  Particle.publish("Time",Time.timeStr(t), PRIVATE);
   return 1;
 }
 
@@ -675,7 +677,7 @@ int setOpenTime(String command)
   openTime = tempTime;
   FRAMwrite8(OPENTIMEADDR,openTime);                             // Store the new value in FRAMwrite8
   snprintf(data, sizeof(data), "Open time set to %i",openTime);
-  Particle.publish("Time",data);
+  Particle.publish("Time",data, PRIVATE);
   return 1;
 }
 
@@ -688,7 +690,7 @@ int setCloseTime(String command)
   closeTime = tempTime;
   FRAMwrite8(CLOSETIMEADDR,closeTime);                             // Store the new value in FRAMwrite8
   snprintf(data, sizeof(data), "Closing time set to %i",closeTime);
-  Particle.publish("Time",data);
+  Particle.publish("Time",data, PRIVATE);
   return 1;
 }
 
@@ -699,13 +701,13 @@ int setLowPowerMode(String command)                                   // This is
   controlRegister = FRAMread8(CONTROLREGISTER);                       // Get the control register (generla approach)
   if (command == "1")                                                 // Command calls for setting lowPowerMode
   {
-    Particle.publish("Mode","Low Power");
+    Particle.publish("Mode","Low Power", PRIVATE);
     controlRegister = (0b00000001 | controlRegister);                  // If so, flip the lowPowerMode bit
     lowPowerMode = true;
   }
   else if (command == "0")                                            // Command calls for clearing lowPowerMode
   {
-    Particle.publish("Mode","Normal Operations");
+    Particle.publish("Mode","Normal Operations", PRIVATE);
     controlRegister = (0b1111110 & controlRegister);                  // If so, flip the lowPowerMode bit
     lowPowerMode = false;
   }
