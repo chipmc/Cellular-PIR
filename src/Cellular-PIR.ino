@@ -44,12 +44,14 @@
 #define CURRENTCOUNTOFFSET 4          // Offsets for the values in the hourly words
 #define CURRENTDURATIONOFFSET 6       // Where the hourly battery charge is stored
 // Finally, here are the variables I want to change often and pull them all together here
-#define SOFTWARERELEASENUMBER "0.79"
+#define SOFTWARERELEASENUMBER "0.80"
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"        // Library for FRAM functions
 #include "FRAM-Library-Extensions.h"  // Extends the FRAM Library
 #include "electrondoc.h"              // Documents pinout
+#include "ConnectionEvents.h"                       // Stores information on last connection attemt in memory
+
 
 // Prototypes and System Mode calls
 SYSTEM_MODE(SEMI_AUTOMATIC);          // This will enable user code to start executing automatically.
@@ -57,6 +59,8 @@ SYSTEM_THREAD(ENABLED);               // Means my code will not be held up by Pa
 STARTUP(System.enableFeature(FEATURE_RESET_INFO));
 FuelGauge batteryMonitor;             // Prototype for the fuel gauge (included in Particle core library)
 PMIC power;                           //Initalize the PMIC class so you can call the Power Management functions below.
+ConnectionEvents connectionEvents("connEventStats");// Connection events object
+
 
 // State Maching Variables
 enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, SLEEPING_STATE, NAPPING_STATE, LOW_BATTERY_STATE, REPORTING_STATE, RESP_WAIT_STATE };
@@ -93,8 +97,8 @@ byte controlRegister;                               // Stores the control regist
 bool lowPowerMode;                                  // Flag for Low Power Mode operations
 bool solarPowerMode;                                // Changes the PMIC settings
 bool verboseMode;                                   // Enables more active communications for configutation and setup
-retained char SignalString[17];                           // Used to communicate Wireless RSSI and Description
-const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
+char SignalString[64];                     // Used to communicate Wireless RSSI and Description
+const char* radioTech[8] = {"Unknown","None","WiFi","GSM","UMTS","CDMA","LTE","IEEE802154"};
 
 // Time Related Variables
 time_t t;                                           // Global time vairable
@@ -169,6 +173,9 @@ void setup()                                // Note: Disconnected Setup()
   Particle.function("SetTimeZone",setTimeZone);
   Particle.function("SetOpenTime",setOpenTime);
   Particle.function("SetClose",setCloseTime);
+
+  // Load the elements for improving troubleshooting and reliability
+  connectionEvents.setup();                                           // For logging connection event data
 
 
   if (!fram.begin()) {                                                  // You can stick the new i2c addr in here, e.g. begin(0x51);
@@ -355,6 +362,8 @@ void loop()
     }
     break;
   }
+  Particle.process();
+  connectionEvents.loop();
 }
 
 void recordCount()                                          // Handles counting when the sensor triggers
@@ -442,10 +451,18 @@ void takeMeasurements() {
 
 void getSignalStrength()
 {
-    CellularSignal sig = Cellular.RSSI();  // Prototype for Cellular Signal Montoring
-    int rssi = sig.rssi;
-    int strength = map(rssi, -131, -51, 0, 5);
-    snprintf(SignalString,17, "%s: %d", levels[strength], rssi);
+  // New Signal Strength capability - https://community.particle.io/t/boron-lte-and-cellular-rssi-funny-values/45299/8
+  CellularSignal sig = Cellular.RSSI();
+
+  auto rat = sig.getAccessTechnology();
+
+  //float strengthVal = sig.getStrengthValue();
+  float strengthPercentage = sig.getStrength();
+
+  //float qualityVal = sig.getQualityValue();
+  float qualityPercentage = sig.getQuality();
+
+  snprintf(SignalString,sizeof(SignalString), "%s S:%2.0f%%, Q:%2.0f%% ", radioTech[rat], strengthPercentage, qualityPercentage);
 }
 
 int getTemperature()
